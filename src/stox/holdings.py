@@ -1,13 +1,17 @@
 from __future__ import annotations
 import json
+import pandas as pd
 from datetime import date
 from .actions import total_return,relevant,UnresolvedAction
 from .storage import encode
+from .security import identifier_kind, ticker_shape, SecurityMaster
 
 
 def add(store,symbol,purchased,price,shares=None):
     symbol=symbol.upper().strip()
-    if not symbol or len(symbol)>20 or not all(c.isalnum() or c in '.-' for c in symbol):
+    if identifier_kind(symbol):
+        raise ValueError('Holdings require a ticker, not a CUSIP/ISIN/FIGI/provider ID')
+    if not ticker_shape(symbol):
         raise ValueError('Invalid symbol')
     day=date.fromisoformat(purchased)
     if day>date.today() or price<=0 or (shares is not None and shares<=0):
@@ -16,7 +20,9 @@ def add(store,symbol,purchased,price,shares=None):
     fid=linked['id'] if linked and (day-date.fromisoformat(linked['issued_at'][:10])).days<=7 else None
     with store.db:
         cur=store.db.execute('INSERT INTO holdings(symbol,purchased,price,shares,forecast_id) VALUES(?,?,?,?,?)',(symbol,purchased,price,shares,fid))
-    return cur.lastrowid
+    hid=cur.lastrowid
+    SecurityMaster(store).resolve_holdings()
+    return hid
 
 def review(store,forecasts,run_id):
     results=[]
@@ -30,7 +36,7 @@ def review(store,forecasts,run_id):
         present=next((r for r in current if r['horizon']==30),None)
         status,reason='WARNING','Current outlook unavailable or unvalidated'
         delta=None
-        if present and present['model_validated'] and not any('unavailable' in r or 'degraded' in r or 'stale' in r for r in present.get('exclusions',[])):
+        if h['resolution_status']=='resolved' and present and present['model_validated'] and not any('unavailable' in r or 'degraded' in r or 'stale' in r for r in present.get('exclusions',[])):
             status,reason='HEALTHY','No material deterioration under the configured review rules'
             if old:
                 delta=present['p_gain']-old['p_gain']
@@ -42,7 +48,7 @@ def review(store,forecasts,run_id):
             if present['p_loss_20']>.10:
                 status,reason='MATERIAL NEGATIVE CHANGE','Catastrophic downside estimate exceeds risk policy'
         ret=None
-        bars=store.bars(h['symbol'])
+        bars=store.bars(h['symbol']) if h['resolution_status']=='resolved' else pd.DataFrame()
         if not bars.empty:
             last=bars.sort_values('session').iloc[-1]
             try:

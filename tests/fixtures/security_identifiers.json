@@ -1,0 +1,16 @@
+{
+  "fixture_only": true,
+  "assets": [
+    {"id":"asset-spy","symbol":"SPY","name":"SPY ETF","class":"us_equity","exchange":"ARCA","status":"active","tradable":true},
+    {"id":"asset-qqq","symbol":"QQQ","name":"QQQ ETF","class":"us_equity","exchange":"NASDAQ","status":"active","tradable":true},
+    {"id":"asset-good","symbol":"GOOD","name":"Good Common Stock","class":"us_equity","exchange":"NYSE","status":"active","tradable":true,"cusip":"09175M861","isin":"US09175M8612","figi":"BBG000BLNNH6","cik":"0001234567"},
+    {"id":"asset-private","symbol":"09175M861","name":"Private Common Stock Class B","class":"us_equity","exchange":"NYSE","status":"inactive","tradable":false,"cusip":"09175M861"},
+    {"id":"asset-old","symbol":"OLD","name":"Old Common Stock","class":"us_equity","exchange":"NYSE","status":"inactive","tradable":false},
+    {"id":"asset-privclass","symbol":"PRIVATE.B","name":"Private Ordinary Shares Class B","class":"us_equity","exchange":"NYSE","status":"active","tradable":false}
+  ],
+  "actions": [
+    {"id":"event-distribution","action_type":"spin_offs","symbol":"09175M861","new_cusip":"037833100","new_symbol":"037833100","ex_date":"2025-01-06"},
+    {"id":"event-rename","action_type":"name_changes","old_symbol":"OLD","new_symbol":"GOOD","old_cusip":"09175M861","process_date":"2025-01-06"},
+    {"id":"event-reverse","action_type":"reverse_splits","symbol":"GOOD","old_cusip":"09175M861","new_cusip":"037833100","old_rate":10,"new_rate":1,"ex_date":"2025-01-06"}
+  ]
+}

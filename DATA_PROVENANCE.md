@@ -5,7 +5,7 @@ Provider contracts were inspected on 2026-10-03. This is documentation review, n
 | Source | Uses | Availability treatment |
 |---|---|---|
 | Alpaca historical SIP bars | Raw daily OHLCV, paper-price references, benchmarks | Completed XNYS session; end older than 16 minutes; raw prices, no hidden dividend adjustments |
-| Alpaca assets | Active/inactive security identity and classification | First local observation and changed snapshots; not retroactively certified historical membership |
+| Alpaca assets | Active/inactive identity provenance; only verified active/tradable tickers authorize new bars | First local observation and changed snapshots; not retroactively certified historical membership |
 | Alpaca corporate actions | Splits, distributions, event context | Full revision payload retained; effective/ex-date separated from local observation |
 | Alpaca news | Provider-delivered headlines/summaries, IDs, authors, URLs, symbols | Revised text available no earlier than `updated_at`; original locally observed payloads retained |
 | SEC submissions | Accessions, forms, accepted times, historical submission pages | Acceptance time; date-only records conservatively delayed to the next day |
@@ -38,3 +38,8 @@ Historical asset coverage and security-type classification are approximations. N
 - [SEC EDGAR APIs](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)
 - [FRED/ALFRED observations](https://fred.stlouisfed.org/docs/api/fred/series_observations.html)
 - [Alpha Vantage documentation](https://www.alphavantage.co/documentation/)
+
+
+## Typed identifier provenance (2.0.2)
+
+Corporate-action IDs and CUSIP/ISIN/FIGI/asset references are not ticker fields. Raw payloads remain available, while normalized `security_references` identify type, role, authoritative asset mapping (if any) and queryability. Old/new identifiers in distributions, renames and reverse splits do not automatically alter the universe. A CUSIP may resolve to a ticker only via an explicit authoritative asset mapping; it is never submitted to stock historical-bars `symbols`. SEC CIK enrichment and event-only mappings cannot authorize price queries. Historical identifiers retain provenance without implying a reconstructed ticker chain.

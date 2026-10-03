@@ -7,7 +7,9 @@ from urllib.parse import urlsplit, parse_qsl, unquote_plus
 import requests
 
 class ProviderError(RuntimeError):
-    pass
+    def __init__(self,message,status_code=None):
+        super().__init__(message)
+        self.status_code=status_code
 
 def sanitized_response(response, url='', params=None, headers=None):
     """Bounded diagnostics with request credentials and credential fields removed."""
@@ -65,7 +67,7 @@ class HTTP:
                     continue
             if code != 200:
                 detail = sanitized_response(response, url, params, headers)
-                raise ProviderError(f'{host}: HTTP {code}: {detail}')
+                raise ProviderError(f'{host}: HTTP {code}: {detail}',status_code=code)
             if raw:
                 return response.text
             try:

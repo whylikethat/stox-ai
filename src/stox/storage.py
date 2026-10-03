@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pandas as pd
 
-SCHEMA = 1
+SCHEMA = 2
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -36,6 +36,12 @@ class Store:
         if version > SCHEMA:
             raise RuntimeError('Database was created by a newer STOX-AI version')
         self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS security_master(asset_id TEXT PRIMARY KEY,market_symbol TEXT,provider_symbol TEXT,security_type TEXT,status TEXT,tradable INTEGER,queryable INTEGER,reason TEXT,metadata_hash TEXT,payload TEXT,updated_at TEXT,present INTEGER,intended_candidate INTEGER);
+        CREATE INDEX IF NOT EXISTS security_symbol ON security_master(market_symbol);
+        CREATE TABLE IF NOT EXISTS security_identifiers(entity_id TEXT,kind TEXT,value TEXT,source TEXT,role TEXT,effective_at TEXT,observed_at TEXT,PRIMARY KEY(entity_id,kind,value,source,role,effective_at));
+        CREATE INDEX IF NOT EXISTS typed_identifier ON security_identifiers(kind,value);
+        CREATE TABLE IF NOT EXISTS security_quarantine(asset_id TEXT PRIMARY KEY,metadata_hash TEXT,reason TEXT,quarantined_at TEXT,retry_after TEXT);
+        CREATE TABLE IF NOT EXISTS price_history_owners(ticker TEXT PRIMARY KEY,asset_id TEXT,bound_at TEXT);
         CREATE TABLE IF NOT EXISTS checkpoints(scope TEXT PRIMARY KEY, value TEXT NOT NULL, succeeded_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS health(provider TEXT PRIMARY KEY, status TEXT, detail TEXT, updated_at TEXT);
         CREATE TABLE IF NOT EXISTS records(kind TEXT, record_id TEXT, revision TEXT, available_at TEXT, ingested_at TEXT, payload TEXT, PRIMARY KEY(kind,record_id,revision));
@@ -56,6 +62,10 @@ class Store:
         CREATE TRIGGER IF NOT EXISTS immutable_outcome_update BEFORE UPDATE ON outcomes BEGIN SELECT RAISE(ABORT,'Immutable outcome'); END;
         CREATE TRIGGER IF NOT EXISTS immutable_outcome_delete BEFORE DELETE ON outcomes BEGIN SELECT RAISE(ABORT,'Immutable outcome'); END;
         ''')
+        holding_columns={r[1] for r in self.db.execute('PRAGMA table_info(holdings)')}
+        for name,definition in [('security_id','TEXT'),('input_kind',"TEXT DEFAULT 'ticker'"),('resolution_status',"TEXT DEFAULT 'unverified'")]:
+            if name not in holding_columns:
+                self.db.execute(f'ALTER TABLE holdings ADD COLUMN {name} {definition}')
         self.db.execute(f'PRAGMA user_version={SCHEMA}')
         self.db.commit()
 
@@ -74,6 +84,13 @@ class Store:
     def checkpoint(self, scope):
         row = self.db.execute('SELECT value FROM checkpoints WHERE scope=?', (scope,)).fetchone()
         return row[0] if row else None
+
+    def invalidate_checkpoint(self, scope, reason):
+        previous = self.checkpoint(scope)
+        if previous is not None:
+            self.record('checkpoint_invalidations', scope, {'previous': previous, 'reason': reason}, now_iso())
+            with self.db:
+                self.db.execute('DELETE FROM checkpoints WHERE scope=?', (scope,))
 
     def advance(self, scope, value):
         with self.db:

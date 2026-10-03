@@ -1,6 +1,7 @@
 from __future__ import annotations
 import pandas as pd
 from .http import HTTP, ProviderError
+from ..security import MarketDataSymbol
 
 class Alpaca:
     base = 'https://data.alpaca.markets'
@@ -36,7 +37,9 @@ class Alpaca:
         return result
 
     def bars(self, symbols, start, end):
-        params = {'symbols':','.join(sorted(set(symbols))), 'start':start,'end':end,
+        if not symbols or any(not isinstance(s,MarketDataSymbol) for s in symbols):
+            raise ValueError('Alpaca bars require security-master validated MarketDataSymbol references')
+        params = {'symbols':','.join(sorted({s.ticker for s in symbols})), 'start':start,'end':end,
                   'timeframe':'1Day','adjustment':'raw','feed':'sip','asof':'-', 'limit':10000,'sort':'asc'}
         for page in self.pages('/v2/stocks/bars',params):
             if 'bars' not in page:

@@ -9,7 +9,7 @@ STOX-AI is a single-user local Python package. `stox run` is the orchestrator; t
 | Provider transport | `providers/http.py` | Timeouts, per-host throttling, bounded retries, redacted errors |
 | Adapters | `providers/` | Alpaca, SEC, FRED/ALFRED, optional Alpha Vantage |
 | Ingestion | `ingestion.py` | Stable symbol scopes; per-feed checkpoints only after complete pagination |
-| Universe | `universe.py` | Conservative instrument classification, liquidity and history gates |
+| Universe | `security.py`, `universe.py` | Typed identity and authoritative query authorization; conservative instrument, liquidity and history gates |
 | Storage | `storage.py` | SQLite WAL, process lock, compressed Parquet, DuckDB summaries |
 | Corporate actions | `actions.py` | Explicit unit/cash accounting; unknown transformations quarantine |
 | Features / labels | `features.py` | Causal wealth index, availability joins, calendar-day targets |
@@ -22,7 +22,7 @@ STOX-AI is a single-user local Python package. `stox run` is the orchestrator; t
 
 ## Transaction boundaries and recovery
 
-Each downloaded bar page is validated and atomically merged into its symbol's Parquet file. A checkpoint advances only after the complete symbol/feed request succeeds. A partial failure leaves prior page data durable but not marked complete, so replay is idempotent. Event revisions use `(kind, provider record ID, payload hash)` uniqueness. Model files use temporary files and atomic rename before registry insertion. Run status identifies failure separately from last success. An advisory filesystem lock serializes writers.
+Each downloaded bar page is validated and atomically merged into its symbol's Parquet file. A price checkpoint advances only after complete pagination and verification that durable bars contain the target completed session. Legacy empty/overstated checkpoints are audit-invalidated without removing data. A partial failure leaves prior page data durable but not marked complete, so replay is idempotent. Event revisions use `(kind, provider record ID, payload hash)` uniqueness. Model files use temporary files and atomic rename before registry insertion. Run status identifies failure separately from last success. An advisory filesystem lock serializes writers.
 
 Official forecast payloads are inserted once; SQL triggers reject updates and deletes. Actual paper entry and outcomes are inserted into separate immutable tables. New forecasts are persisted before exports so an export failure cannot erase issued numerical results. AI export is isolated. Last-report aliases update atomically; a failed core update does not overwrite trustworthy reports.
 
@@ -37,3 +37,12 @@ SQLite event/fundamental state may grow materially on large universes. A future 
 ## Audit and retention
 
 Every official forecast retains model IDs, calibration/evaluation metadata, feature version, universe/data fingerprints, source health and information cutoffs. Model artifacts referenced by official forecasts are retained. Unreferenced older artifacts are pruned while registry metadata persists. Historical bars/events are not automatically deleted. Logs rotate; cache temporaries are disposable. Forecasts/outcomes are never retention targets.
+
+
+## Security master and query boundary
+
+`security_master` is keyed by Alpaca asset ID, with distinct raw provider symbol and nullable validated market-data ticker. `security_identifiers` carries typed values, sources, roles, effective and observation times. `security_snapshots` preserves changed decisions. `price_history_owners` binds ticker archives to asset IDs; `security_quarantine` persists isolated provider rejection with a bounded retry time. Additive schema-2 migration leaves original datasets and immutable forecast/outcome tables intact.
+
+All production bars calls take `MarketDataSymbol` references returned by the master. Validation combines asset class/exchange/security type/status/tradability, unique identity, typed-ID conflicts and broad syntax safeguards; passing a regex alone never authorizes a symbol. Ingestion and engine share this master. Holdings remain stored even if unresolved, but cannot authorize queries or healthy reviews. Features and labels require resolution; ranking checks master eligibility. Reports consume those filtered outputs. Historical forecast settlement reads retained local archives only and never initiates provider symbol queries.
+
+Corporate-action annotations attach separately typed references to the original event; unknown/private distribution securities stay event provenance. SEC enrichment starts with resolved tickers and attaches CIKs to asset identity. News is fetched globally and joins only validated feature tickers. Neither path creates assets. One-off invalid symbols are isolated; aggregate failure budgets and existing coverage/benchmark gates prevent a widespread universe defect from silently producing forecasts.

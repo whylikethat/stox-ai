@@ -1,5 +1,7 @@
 from __future__ import annotations
 import pandas as pd
+import re
+import logging
 from .calendar import utc
 from .storage import digest, now_iso
 from .providers.alpaca import Alpaca, parse_bar
@@ -7,6 +9,8 @@ from .providers.sec import SEC
 from .providers.fred import FRED
 from .providers.alpha import AlphaVantage
 from .universe import classify
+from .security import SecurityMaster
+from .providers.http import ProviderError
 
 class Ingestor:
     def __init__(self, cfg, store, calendar, alpaca=None):
@@ -23,37 +27,81 @@ class Ingestor:
         stamp = now.isoformat()
         self.store.storage_check(self.cfg.soft_storage_gb,self.cfg.hard_storage_gb)
         assets = self.alpaca.assets()
+        master=SecurityMaster(self.store)
         for asset in assets:
-            asset = {**asset,'security_type':classify(asset)}
-            self.store.record('assets',asset['id'],asset,stamp)
+            self.store.record('assets',asset.get('id') or 'unresolved:'+digest(asset),{**asset,'security_type':classify(asset)},stamp)
+        master.refresh(assets,stamp)
+        master.resolve_holdings()
         self.store.advance('assets',stamp)
-        # Preserve inactive names for historical datasets; unknown instrument types stay excluded.
-        candidates = [a for a in assets if classify(a) in ('common','etf')]
-        symbols = sorted({a['symbol'] for a in candidates} | {'SPY','QQQ'} | {r[0] for r in self.store.db.execute('SELECT symbol FROM holdings WHERE active=1')})
-        if self.cfg.symbols:
-            symbols = sorted(set(self.cfg.symbols) | {'SPY','QQQ'} | {r[0] for r in self.store.db.execute('SELECT symbol FROM holdings WHERE active=1')})
-        for symbol in symbols:
-            scope = 'bars:'+symbol
-            if self.store.checkpoint(scope) == session:
-                continue
-            self.store.storage_check(self.cfg.soft_storage_gb,self.cfg.hard_storage_gb)
-            count = 0
-            for page in self.alpaca.bars([symbol],self._start(scope),end):
-                rows = [parse_bar(symbol,r,self.calendar,stamp) for r in page.get(symbol,[])]
-                rows = [r for r in rows if r['session'] <= session]
-                count += len(rows)
-                self.store.put_bars(symbol,pd.DataFrame(rows))
-            # An empty successful response may be an inactive security, but never grants eligibility.
-            self.store.advance(scope,session)
-            self.store.health(scope,'PASS' if count else 'WARN',f'{count} bars returned')
-        self.store.health('alpaca-bars','PASS',f'SIP completed-session query through {session}')
+        # Upgrade cached event provenance without discarding downloaded events or bar checkpoints.
+        if self.store.checkpoint('action_identifier_schema')!='2':
+            for action in self.store.records('actions'):
+                normalized=master.annotate_action(action)
+                self.store.record('actions',action.get('id') or digest(action),normalized,stamp)
+            self.store.advance('action_identifier_schema','2')
+        requests=master.requests(self.cfg)
+        warnings=[]
+        def summarize():
+            diagnostics=master.persist_diagnostics(self.cfg,session)
+            print('Universe: '+', '.join(f'{k}={v}' for k,v in diagnostics.items() if isinstance(v,int)))
+        summarize()
+        try:
+            master.check_failure_budget(self.cfg)
+            if not requests:
+                raise RuntimeError('Universe validation failed: no authoritative active tradable tickers; inspect stox universe')
+            for reference in requests:
+                symbol=reference.ticker
+                scope='bars:'+symbol
+                existing=self.store.bars(symbol)
+                checkpoint=self.store.checkpoint(scope)
+                master.bind_history(reference,stamp)
+                # v1 sometimes advanced checkpoints for empty responses. Verify durable data before reuse.
+                if checkpoint==session and not existing.empty and session in set(existing.session):
+                    continue
+                self.store.storage_check(self.cfg.soft_storage_gb,self.cfg.hard_storage_gb)
+                start=self.cfg.history_start if existing.empty else self._start(scope)
+                if not existing.empty and checkpoint and existing.session.max()<checkpoint:
+                    start=max(self.cfg.history_start,(pd.Timestamp(existing.session.max())-pd.Timedelta(days=3)).date().isoformat())
+                if checkpoint and (existing.empty or existing.session.max()<checkpoint):
+                    self.store.invalidate_checkpoint(scope,'Checkpoint has no matching durable completed-session data')
+                count=0
+                try:
+                    for page in self.alpaca.bars([reference],start,end):
+                        if any(k!=symbol for k in page):
+                            raise ProviderError('Alpaca bars returned an unexpected symbol; response not merged')
+                        rows=[parse_bar(symbol,r,self.calendar,stamp) for r in page.get(symbol,[]) or []]
+                        rows=[r for r in rows if r['session']<=session]
+                        count+=len(rows)
+                        self.store.put_bars(symbol,pd.DataFrame(rows))
+                except ProviderError as exc:
+                    if exc.status_code in (400,404,422) and re.search(r'invalid symbol|symbol[^;\n]*(?:not found|not valid|unknown)',str(exc),re.I):
+                        reason='provider rejected ticker: '+str(exc)
+                        master.quarantine(reference,reason,stamp)
+                        warnings.append(f'{symbol}: quarantined; {reason}')
+                        master.check_failure_budget(self.cfg)
+                        continue
+                    # Credentials, rate limits, network errors and malformed request parameters stay fatal.
+                    raise
+                durable=self.store.bars(symbol)
+                if durable.empty or session not in set(durable.session):
+                    reason='no-price-history' if durable.empty else 'latest completed session missing'
+                    self.store.health(scope,'WARN',reason+'; checkpoint not advanced')
+                    warnings.append(f'{symbol}: {reason}; retry on next run')
+                    continue
+                self.store.advance(scope,session)
+                self.store.health(scope,'PASS',f'{count} bars returned; completed session verified')
+            self.store.health('alpaca-bars','WARN' if warnings else 'PASS',f'Completed-session processing through {session}; {len(warnings)} isolated security notices')
+        finally:
+            summarize()
+        # Only approved references are passed into optional per-security enrichment.
+        symbols=[r.ticker for r in master.requests(self.cfg)]
         # Core total-return feed. Any failure propagates and blocks fresh forecasts.
         for rows in self.alpaca.actions(self._start('actions',35),stamp):
             for row in rows:
-                self.store.record('actions',row.get('id',digest(row)),row,stamp)
+                normalized=master.annotate_action(row)
+                self.store.record('actions',row.get('id',digest(row)),normalized,stamp)
         self.store.advance('actions',stamp)
         self.store.health('actions','PASS','Corporate-action pagination completed; late announcements remain a provider limitation')
-        warnings = []
         try:
             for rows in self.alpaca.news(self._start('news',7),stamp):
                 for row in rows:
@@ -76,6 +124,8 @@ class Ingestor:
                 if symbol not in mapping:
                     continue
                 cik = mapping[symbol]
+                reference=SecurityMaster(self.store).resolve(symbol)
+                SecurityMaster(self.store).identifier(reference.alpaca_asset_id,'sec_cik',cik,'sec_edgar','ticker_mapping',stamp)
                 scope = 'sec:'+cik
                 if self.store.checkpoint(scope) and self.store.checkpoint(scope)[:10] == stamp[:10]:
                     continue

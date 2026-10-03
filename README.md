@@ -118,7 +118,7 @@ SQLite holds transactional audit state; compressed per-symbol Parquet stores mar
 
 Stop with Ctrl-C, wait for process exit, then unmount the drive. There is no background daemon. For a manual backup, stop the application and copy the entire data root and configuration to another drive; keep credentials private. Restore that directory and select its root in config. No recurring backup archives are created.
 
-Before upgrading, stop STOX-AI and make a manual backup. Run `git pull --ff-only`, then `bash scripts/setup.sh`, `source .venv/bin/activate`, `stox doctor`, and the tests. The database rejects newer unsupported schema versions rather than guessing a downgrade. Schema version 1 initializes transactionally defined tables; future migrations must preserve the immutable forecast/outcome history.
+Before upgrading, stop STOX-AI and make a manual backup. Run `git pull --ff-only`, then `bash scripts/setup.sh`, `source .venv/bin/activate`, `stox doctor`, and the tests. The database rejects newer unsupported schema versions rather than guessing a downgrade. Schema version 2 adds security identity, quarantine and history-ownership tables plus holding-resolution fields. The migration preserves existing bars, event revisions, holdings, forecasts/outcomes and valid checkpoints; no data deletion or reset is required.
 
 ## Troubleshooting
 
@@ -144,3 +144,28 @@ SEC evidence includes filing metadata and company-fact observations, not complet
 Earnings/event coverage is incomplete without optional enrichment. Full-universe provider throughput and 12-GB hardware memory use need local measurement; only bounded synthetic workflows were exercised here. Optional family selection and a calibration method do not by themselves establish useful real-world forecasts. Quantile coverage and extreme-tail estimates require continued scrutiny; meaningful prospective evidence takes months.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [DATA_PROVENANCE.md](DATA_PROVENANCE.md), [MODEL_CARD.md](MODEL_CARD.md) and [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md).
+
+
+## Security identities and recovering a failed bootstrap (2.0.2)
+
+Only an authoritative Alpaca asset with an active, tradable U.S. equity/ETF ticker, supported exchange and accepted common-stock/standard-ETF classification enters price ingestion. Tickers, Alpaca asset IDs, CUSIPs, ISINs, FIGIs, SEC CIKs, provider IDs and prior tickers are stored separately. Corporate actions, news, SEC records, configured symbols and manual holdings cannot promote an identifier into the trading universe. The bars adapter requires a typed, validated ticker reference. The fixed SPY doctor canary is a deliberate separate preflight path.
+
+Corporate actions retain all original identifiers and their roles, including non-traded distribution securities. An explicit identifier lookup can resolve only an unambiguous authoritative asset mapping; events cannot create that mapping. Renames/reverse splits preserve identifier provenance without automatically stitching price histories or rewriting holdings. A ticker reused by a different asset is quarantined instead of merged with an already bound history.
+
+A symbol-specific provider rejection quarantines that asset, logs its reason, and continues with other securities. It is retried after seven days or when authoritative metadata changes. Authentication, rate-limit, server and general request errors still fail the run. At least two failed intended active/tradable assets exceeding the configured 5% identity-failure budget stop processing with an aggregate diagnostic. These limits are configurable in `config.toml`.
+
+Bootstrap and `stox status` show discovery, classification, inactive, non-queryable, identifier-failure, missing-history, price/liquidity and final eligible counts. `stox universe` includes individual exclusion reasons. Categories overlap; classification counts alone do not imply recommendation eligibility. Prices/history must be downloaded before data-dependent gates can be evaluated; fresh observations continue to update below-threshold securities so eligibility can recover. Recommendations retain the configured $5 minimum, liquidity/history and model gates.
+
+To resume an interrupted bootstrap, keep the same configuration and data root, then run from the repository:
+
+```bash
+git pull --ff-only
+bash scripts/setup.sh
+source .venv/bin/activate
+stox doctor --live
+stox bootstrap
+stox universe
+stox status
+```
+
+Do not delete your database or warehouse. Completed symbols with verified durable bars are reused; partial symbols replay with idempotent merges. Legacy checkpoints pointing beyond durable history are invalidated with an audit record, and only those symbols are retried. Empty responses cannot mark a price stage complete. Existing inactive/non-queryable archives are retained but excluded from new recommendations. This does not certify historical listing membership or reconstruct missing rename/delisting chains.

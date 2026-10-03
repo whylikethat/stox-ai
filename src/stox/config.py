@@ -16,6 +16,8 @@ class Config:
     min_dollar_volume: float = 20_000_000
     min_history: int = 252
     min_core_coverage: float = .90
+    max_identifier_failure_fraction: float = .05
+    min_identifier_failures: int = 2
     max_participation: float = .005
     liquidity_reference_usd: float = 100_000
     soft_storage_gb: float = 100
@@ -50,6 +52,8 @@ class Config:
             raise ValueError('Horizons must be unique positive calendar-day values including 30.')
         if cfg.friction_bps < 0 or not 0 < cfg.soft_storage_gb < cfg.hard_storage_gb:
             raise ValueError('Invalid friction or storage limits.')
+        if not 0 < cfg.max_identifier_failure_fraction <= 1 or cfg.min_identifier_failures < 2:
+            raise ValueError('Invalid universe identifier-failure limits.')
         secrets_path = base / '.secrets' / 'providers.env'
         if secrets_path.exists():
             for line in secrets_path.read_text().splitlines():

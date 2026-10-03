@@ -82,7 +82,7 @@ def test_rank_ties():
 
 
 def test_security_filters(cfg):
-    a={'class':'us_equity','name':'Normal ETF','exchange':'ARCA','status':'active'}
+    a={'tradable':True,'queryable':True,'class':'us_equity','name':'Normal ETF','exchange':'ARCA','status':'active'}
     assert classify(a)=='etf'
     assert classify({**a,'name':'Bull 3X ETF'})=='excluded'
     assert classify({**a,'name':'Company Warrants'})=='excluded'

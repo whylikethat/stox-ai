@@ -30,12 +30,14 @@ def seed(cfg, end='2025-12-19'):
                          'available_at':cal.close(s).isoformat(),'ingested_at':stamp.isoformat()})
         store.put_bars(symbol,pd.DataFrame(rows))
         asset={'id':'synthetic-'+symbol,'symbol':symbol,'name':symbol+' Common Stock' if i>1 else symbol+' ETF',
-               'class':'us_equity','exchange':'NASDAQ','status':'active','security_type':'common' if i>1 else 'etf'}
+               'tradable':True,'class':'us_equity','exchange':'NASDAQ','status':'active','security_type':'common' if i>1 else 'etf'}
         store.record('assets',asset['id'],asset,cal.open(sessions[0]).isoformat())
         assets.append(asset)
         store.advance('bars:'+symbol,sessions[-1])
     for key in ('actions','news','sec','fred'):
         store.advance(key,stamp.isoformat())
+    from .security import SecurityMaster
+    SecurityMaster(store).refresh(assets,stamp.isoformat())
     if not store.db.execute('SELECT 1 FROM holdings').fetchone():
         add(store,'DEMOA',sessions[-50],float(store.bars('DEMOA').iloc[-50].close),10)
     store.close()

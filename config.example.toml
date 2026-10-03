@@ -8,6 +8,9 @@ min_price = 5.0
 min_dollar_volume = 20000000.0
 min_history = 252
 min_core_coverage = 0.90
+# Abort if at least two intended assets fail identity validation and exceed 5%.
+max_identifier_failure_fraction = 0.05
+min_identifier_failures = 2
 liquidity_reference_usd = 100000.0
 max_participation = 0.005
 soft_storage_gb = 100.0

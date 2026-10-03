@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from .storage import encode
+from .actions import relevant
 
 REVIEW_INSTRUCTIONS='''# STOX-AI INDEPENDENT REVIEW PACKAGE
 
@@ -34,7 +35,7 @@ def evidence(store,symbol,cutoff):
     filings=[r for r in store.records('filings',cutoff) if r.get('symbol')==symbol][-6:]
     facts=[r for r in store.records('facts',cutoff) if r.get('symbol')==symbol and r.get('concept') in ('Assets','Liabilities','NetIncomeLoss','Revenues','OperatingIncomeLoss')][-12:]
     earnings=[r for r in store.records('earnings',cutoff) if r.get('symbol')==symbol]
-    actions=[r for r in store.records('actions',cutoff) if symbol in (r.get('symbol'),r.get('old_symbol'),r.get('new_symbol'),r.get('initiating_symbol'))][-10:]
+    actions=relevant(store.records('actions',cutoff),symbol)[-10:]
     return {'news':news,'filings':filings,'fundamental_evidence':facts,'earnings':earnings,'corporate_actions':actions,
             'known_gaps':['Unverified future earnings dates must be treated as unknown','Historical security type/universe metadata is incomplete','Free provider corporate-action announcements may be late']}
 

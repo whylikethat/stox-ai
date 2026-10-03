@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from .actions import adjusted_history, relevant, total_return, UnresolvedAction
 from .storage import digest
+from .security import SecurityMaster
 
 BASE_FEATURES = ['momentum_5','momentum_20','momentum_60','momentum_120','trend_50','trend_200','volatility','downside_vol','drawdown','volume_ratio','log_liquidity','gap','market_relative','beta','cross_rank']
 FAMILIES = {'price':BASE_FEATURES,'news':['news_count','news_negative','filing_count'], 'macro':['macro_DGS10','macro_DGS2','macro_UNRATE','macro_CPIAUCSL','macro_BAMLC0A0CM'], 'fundamentals':['assets_log','leverage','profit_margin','revenue_growth']}
@@ -39,7 +40,13 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000):
     stride=max(1,int(np.ceil(total_rows/max_rows)))
     reference=store.bars('SPY')
     benchmark=market_features(reference,relevant(actions,'SPY'),calendar).set_index('session') if not reference.empty else None
+    master=SecurityMaster(store)
     for symbol in symbols:
+        try:
+            master.resolve(symbol)
+        except ValueError as exc:
+            errors[symbol]=str(exc)
+            continue
         bars = store.bars(symbol)
         if bars.empty:
             errors[symbol] = 'No market history'
@@ -167,6 +174,10 @@ def make_labels(features, store, calendar, horizons, friction):
     output = []
     actions = store.records('actions')
     for symbol,g in features.groupby('symbol'):
+        try:
+            SecurityMaster(store).resolve(symbol)
+        except ValueError:
+            continue
         bars = store.bars(symbol).set_index('session')
         aa = relevant(actions,symbol)
         for row in g.to_dict('records'):

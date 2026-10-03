@@ -40,7 +40,7 @@ def test_raw_sip_bar_parsing(calendar):
 def test_partial_failure_does_not_advance(cfg,store,calendar):
     class Partial:
         def assets(self):
-            return [{'id':'1','symbol':'X','name':'X Common Stock','exchange':'NASDAQ','status':'active'}]
+            return [{'id':'1','symbol':'X','name':'X Common Stock','class':'us_equity','tradable':True,'exchange':'NASDAQ','status':'active'}]
         def bars(self,*args):
             yield {'X':[{'t':'2025-01-06T05:00:00Z','o':10,'h':12,'l':9,'c':11,'v':100}]}
             raise ProviderError('failure on page 2')

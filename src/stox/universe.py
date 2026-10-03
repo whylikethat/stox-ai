@@ -7,7 +7,7 @@ def classify(asset):
     name = asset.get('name','')
     if DISALLOWED.search(name) or any(x in asset.get('attributes',[]) for x in ('ptp_no_exception','ptp_with_exception')):
         return 'excluded'
-    if asset.get('class','us_equity') != 'us_equity' or asset.get('exchange') not in ('NYSE','NASDAQ','ARCA','AMEX','BATS','NYSEARCA'):
+    if asset.get('class') != 'us_equity' or asset.get('exchange') not in ('NYSE','NASDAQ','ARCA','AMEX','BATS','NYSEARCA'):
         return 'excluded'
     if re.search(r'\b(ETF|exchange.traded fund)\b',name,re.I):
         return 'etf'
@@ -19,6 +19,8 @@ def eligible(asset, row, cfg):
     reasons = []
     if asset.get('security_type',classify(asset)) not in ('common','etf'):
         reasons.append('security type is excluded or unverified')
+    if asset.get('queryable') is not True or asset.get('tradable') is not True:
+        reasons.append('security master has not verified a queryable tradable ticker')
     if asset.get('status') != 'active':
         reasons.append('inactive security')
     if row['close'] < cfg.min_price:

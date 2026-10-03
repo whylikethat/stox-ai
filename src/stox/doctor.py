@@ -4,6 +4,7 @@ import pandas as pd
 import math
 from .calendar import MarketCalendar,utc
 from .storage import Store
+from .security import MarketDataSymbol
 from .providers.alpaca import Alpaca, parse_bar
 from .providers.http import ProviderError
 from .providers.sec import SEC
@@ -15,7 +16,7 @@ def sip_preflight(alpaca, calendar, now):
     now = utc(now)
     sessions, start, end = calendar.historical_sip_window(now)
     pages = returned = invalid = 0
-    for page in alpaca.bars(['SPY'], start, end):
+    for page in alpaca.bars([MarketDataSymbol('SPY','preflight:SPY','known_preflight')], start, end):
         pages += 1
         for raw in page.get('SPY', []) or []:
             returned += 1

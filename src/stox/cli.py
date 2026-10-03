@@ -5,6 +5,7 @@ import sys
 from . import __version__
 from .config import Config
 from .storage import Store
+from .security import SecurityMaster
 
 
 def parser():
@@ -23,6 +24,7 @@ def parser():
     s.add_argument('--live',action='store_true')
     s.add_argument('--vintages',action='store_true',help='With --live, separately test an ALFRED as-of snapshot')
     sub.add_parser('status')
+    sub.add_parser('universe',help='Universe counts, unresolved references and quarantine reasons')
     s=sub.add_parser('report')
     s.add_argument('--format',choices=('html','json','md','ai'),default='html')
     s=sub.add_parser('holdings')
@@ -78,13 +80,18 @@ def main(argv=None):
             cfg.initialize()
             store=Store(cfg.root)
             try:
-                if args.command=='status':
+                if args.command=='universe':
+                    master=SecurityMaster(store)
+                    master.ensure()
+                    print(json.dumps({'counts':master.diagnostics(cfg),'excluded':[dict(r) for r in store.db.execute("SELECT asset_id,provider_symbol,reason FROM security_master WHERE queryable=0")], 'unresolved_requests':[dict(r) for r in store.db.execute("SELECT * FROM health WHERE provider LIKE 'security-request:%' AND status='WARN'")]},indent=2))
+                elif args.command=='status':
                     from .engine import git_commit
                     payload={'version':__version__,'git_commit':git_commit(),'schema':store.db.execute('PRAGMA user_version').fetchone()[0],
                              'last_run':dict(r) if (r:=store.db.execute('SELECT * FROM runs ORDER BY started_at DESC LIMIT 1').fetchone()) else None,
                              'last_success':dict(r) if (r:=store.db.execute("SELECT * FROM runs WHERE status='success' ORDER BY started_at DESC LIMIT 1").fetchone()) else None,
                              'checkpoints':[dict(r) for r in store.db.execute('SELECT * FROM checkpoints')],
                              'models':[dict(r) for r in store.db.execute("SELECT id,horizon,created_at,status FROM models WHERE status='champion'")],
+                             'universe':SecurityMaster(store).diagnostics(cfg),
                              'prospective_predictions':store.db.execute('SELECT count(*) FROM forecasts').fetchone()[0],
                              'pending_entries':store.db.execute('SELECT count(*) FROM forecasts f LEFT JOIN entries e ON f.id=e.forecast_id WHERE e.forecast_id IS NULL').fetchone()[0],
                              'outcomes':store.db.execute('SELECT count(*) FROM outcomes').fetchone()[0],

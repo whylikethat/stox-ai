@@ -9,6 +9,7 @@ from threadpoolctl import threadpool_limits
 from . import __version__
 from .calendar import MarketCalendar,utc
 from .storage import Store,encode,now_iso,digest
+from .security import SecurityMaster
 from .ingestion import Ingestor
 from .features import build_features,make_labels
 from .models import registry_train
@@ -48,10 +49,15 @@ def run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                 warnings.append('Offline run: no providers contacted; cached data only')
             if synthetic:
                 warnings.append('SYNTHETIC DATA: model results are a software demonstration, not investment evidence')
-            assets=store.records('assets',started)
-            symbols=sorted({a['symbol'] for a in assets if a.get('security_type') in ('common','etf')}|{'SPY','QQQ'}|{r[0] for r in store.db.execute('SELECT symbol FROM holdings WHERE active=1')})
-            if cfg.symbols:
-                symbols=sorted(set(cfg.symbols)|{'SPY','QQQ'}|{r[0] for r in store.db.execute('SELECT symbol FROM holdings WHERE active=1')})
+            master=SecurityMaster(store)
+            master.ensure(started)
+            master.resolve_holdings()
+            master.check_failure_budget(cfg)
+            assets=master.assets()
+            symbols=[r.ticker for r in master.requests(cfg)]
+            for benchmark in ('SPY','QQQ'):
+                if benchmark not in symbols:
+                    raise RuntimeError(f'FORECASTING BLOCKED: {benchmark} is not an authoritative queryable asset')
             for benchmark in ('SPY','QQQ'):
                 b=store.bars(benchmark)
                 if b.empty or b.session.max()!=session:
@@ -117,7 +123,7 @@ def run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                       'market_session':session,'market_cutoff':cal.close(session).isoformat(),'event_cutoff':started,
                       'news_checkpoint':store.checkpoint('news'),'sec_checkpoint':store.checkpoint('sec'),'macro_checkpoint':store.checkpoint('fred'),
                       'model_ids':{str(h):m.model_id for h,m in models.items()},'feature_version':'causal-v2',
-                      'data_digest':digest([(s,store.checkpoint('bars:'+s)) for s in symbols]),'universe_digest':digest(assets),
+                      'data_digest':digest([(s,store.checkpoint('bars:'+s)) for s in symbols]),'universe_digest':digest(assets),'universe_diagnostics':master.persist_diagnostics(cfg,session),
                       'friction_bps':cfg.friction_bps,'provider_health':[dict(r) for r in store.db.execute('SELECT * FROM health')],
                       'run_mode':'synthetic' if synthetic else 'offline' if offline else 'live',
                       'ranking_rule':'P(gain) first; expected return within comparable calibration resolution',

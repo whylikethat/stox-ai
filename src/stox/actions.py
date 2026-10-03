@@ -7,7 +7,7 @@ def action_date(action):
     return str(action.get('ex_date') or action.get('effective_date') or action.get('process_date') or '')[:10]
 
 def relevant(actions, symbol):
-    return [a for a in actions if symbol in (a.get('symbol'),a.get('old_symbol'),a.get('new_symbol'),a.get('initiating_symbol'),a.get('target_symbol'))]
+    return [a for a in actions if symbol in a.get('resolved_tickers',[]) or symbol in (a.get('symbol'),a.get('old_symbol'),a.get('new_symbol'),a.get('initiating_symbol'),a.get('target_symbol'))]
 
 def kind(action):
     return action['action_type'].rstrip('s')
