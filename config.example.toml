@@ -1,0 +1,27 @@
+[stox]
+# Relative to this config file, independent of external-drive mount paths.
+root = ".stox"
+horizons = [20, 30, 60, 90]
+history_start = "2016-01-01"
+friction_bps = 20.0
+min_price = 5.0
+min_dollar_volume = 20000000.0
+min_history = 252
+min_core_coverage = 0.90
+liquidity_reference_usd = 100000.0
+max_participation = 0.005
+soft_storage_gb = 100.0
+hard_storage_gb = 150.0
+av_daily_budget = 20
+retrain_days = 30
+min_new_labels = 500
+max_training_rows = 250000
+min_validation_blocks = 8
+min_bucket_samples = 100
+max_calibration_error = 0.10
+max_tail_probability = 0.10
+threads = 2
+# Empty means autonomous scanning of conservatively classified assets.
+# A nonempty list restricts research coverage, plus SPY, QQQ and held symbols.
+symbols = []
+macro_series = ["DGS10", "DGS2", "UNRATE", "CPIAUCSL", "BAMLC0A0CM"]
