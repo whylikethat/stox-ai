@@ -49,3 +49,25 @@ class MarketCalendar:
         if self.close(session) > now - pd.Timedelta(minutes=16):
             raise ValueError('Latest regular close is inside the SIP delay window; retry after close + 16 minutes.')
         return session, self.close(session).isoformat()
+
+
+    def historical_sip_window(self, now, count=5):
+        """Small completed-day canary window; independent of production freshness gates.
+
+        Daily bars are stamped at New York midnight, not the session open.
+        Exclude the current local day and leave a 16-minute margin at the end.
+        """
+        now = utc(now)
+        safe_end = now - pd.Timedelta(minutes=16)
+        today = now.tz_convert('America/New_York').date()
+        candidates = []
+        for session in self.sessions((now - pd.Timedelta(days=40)).date(), today):
+            midnight = pd.Timestamp(session).tz_localize('America/New_York')
+            day_end = midnight + pd.DateOffset(days=1) - pd.Timedelta(microseconds=1)
+            if midnight.date() < today and day_end <= safe_end and self.close(session) <= safe_end:
+                candidates.append((session, midnight, day_end))
+        if not candidates:
+            raise ValueError('No safely completed historical SIP session in calendar window')
+        selected = candidates[-count:]
+        return ([r[0] for r in selected], selected[0][1].tz_convert('UTC').isoformat(),
+                selected[-1][2].tz_convert('UTC').isoformat())

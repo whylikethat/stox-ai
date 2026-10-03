@@ -21,3 +21,12 @@ stox --root /tmp/stox-e2e doctor
 Local database integrity, storage and dependency checks passed. Provider checks correctly reported that they were not contacted. A standalone synthetic CLI run also produced all latest-report aliases and trained all four horizons. Synthetic metrics are not evidence of market accuracy.
 
 No claims are made about live entitlements, real-market training, full-universe performance on the target laptop, exchange-auction prices or prospective investment results. The operator must run `stox doctor --live`, then `stox bootstrap`, with credentials stored locally.
+
+## 2.0.1 provider preflight repair — 2026-10-03
+
+- Targeted: `python -m pytest tests/test_doctor.py tests/test_providers.py` — **34 passed in 0.46 seconds**.
+- Full offline suite: `python -m pytest tests` — **53 passed in 35.18 seconds**.
+- Added weekend/holiday/premarket/market-hours/after-close/early-close/DST and recent-window boundary cases; assert explicit `feed=sip`, `timeframe=1Day`, midnight-inclusive queries and valid completed OHLCV.
+- Added empty, future, malformed and nonfinite bar rejection; numeric DGS10 checks; optional as-of snapshot isolation; HTTP 400/403 and non-JSON response diagnostics with credential/encoded-credential redaction.
+- Verified `stox doctor --help` exposes the optional `--vintages` switch. No live provider calls were made during this repair.
+- FRED's former bare HTTP 400 did not preserve the rejected-parameter explanation. The repair separates the simple FRED canary from vintage validation and preserves sanitized error details; it does not claim to have recovered the original error body or live-validated bulk vintage ingestion.

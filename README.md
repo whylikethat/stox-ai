@@ -37,10 +37,11 @@ Alpaca key and secret are core. Use an Alpaca paper API key for the read-only as
 ```bash
 stox doctor                 # Local checks, zero network calls
 stox doctor --live          # Explicit, low-volume provider checks
+stox doctor --live --vintages # Optional separate ALFRED snapshot check
 stox bootstrap             # Resumable historical ingestion, training and reports
 ```
 
-The live doctor checks Alpaca assets, historical SIP bars, news and corporate actions; SEC; FRED/ALFRED; and Alpha Vantage only if configured. PASS means the endpoint responded as expected, not that its entire historical dataset is complete. Core failures return a nonzero exit status. Optional failures produce WARN.
+The live doctor checks Alpaca assets, historical SIP bars, news and corporate actions; SEC; a simple FRED DGS10 observation; and Alpha Vantage only if configured. `--vintages` adds a separately reported ALFRED as-of snapshot check. An ALFRED warning does not change the ordinary FRED result. PASS means the endpoint responded as expected, not that its entire historical dataset is complete. Core failures return a nonzero exit status. Optional failures produce WARN. The SIP doctor uses five completed historical sessions, with New York midnight boundaries and an end timestamp older than the Basic recent-data window. It works during market hours, immediately after close, on weekends and on holidays. This connectivity canary does not require today's bar or bypass the stricter freshness gate used by `stox run`. Provider HTTP errors include bounded, credential-redacted response details.
 
 The first full-universe bootstrap may take many hours, especially SEC history and provider-limited ingestion. Progress is durable per security/feed. Ctrl-C then rerun the same command to resume. No training model or market data is shipped in Git. Keep the external drive mounted while running.
 

@@ -21,6 +21,7 @@ def parser():
     s.add_argument('--end',default='2025-12-19')
     s=sub.add_parser('doctor')
     s.add_argument('--live',action='store_true')
+    s.add_argument('--vintages',action='store_true',help='With --live, separately test an ALFRED as-of snapshot')
     sub.add_parser('status')
     s=sub.add_parser('report')
     s.add_argument('--format',choices=('html','json','md','ai'),default='html')
@@ -61,7 +62,9 @@ def main(argv=None):
             print(f'{len(report["warnings"])} data/model notices. Reports: {path}')
         elif args.command=='doctor':
             from .doctor import doctor
-            results=doctor(cfg,args.live)
+            if args.vintages and not args.live:
+                raise ValueError('--vintages requires --live')
+            results=doctor(cfg,args.live,args.vintages)
             for r in results:
                 print(f'{r["status"]:4} {r["check"]}: {r["detail"]}')
             return 1 if any(r['status']=='FAIL' for r in results) else 0
