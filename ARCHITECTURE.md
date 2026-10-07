@@ -8,7 +8,7 @@ STOX-AI is a single-user local Python package. `stox run` is the orchestrator; t
 | Calendar | `calendar.py` | XNYS holiday and early-close schedule; timezone-aware timestamps |
 | Provider transport | `providers/http.py` | Timeouts, per-host throttling, bounded retries, redacted errors |
 | Adapters | `providers/` | Alpaca, SEC, FRED/ALFRED, optional Alpha Vantage |
-| Ingestion | `ingestion.py` | Stable symbol scopes; per-feed checkpoints only after complete pagination |
+| Ingestion | `ingestion.py`, `streams.py` | Stable symbol scopes; atomic page/cursor receipts within bounded date windows |
 | Universe | `security.py`, `universe.py` | Typed identity and authoritative query authorization; conservative instrument, liquidity and history gates |
 | Storage | `storage.py` | SQLite WAL, process lock, compressed Parquet, DuckDB summaries |
 | Corporate actions | `actions.py` | Explicit unit/cash accounting; unknown transformations quarantine |
@@ -18,7 +18,7 @@ STOX-AI is a single-user local Python package. `stox run` is the orchestrator; t
 | Forecasts | `predictions.py` | SQL-trigger immutability; entry and per-horizon outcomes are separate append-only records |
 | Holdings | `holdings.py` | Manual entry, retained history and descriptive deterioration reviews |
 | Reports | `reporting.py` | Local HTML, JSON, Markdown and independent-review package |
-| Operations | `cli.py`, `doctor.py` | Setup, run, report, status, doctor, holdings, isolated demo |
+| Operations | `cli.py`, `doctor.py`, `progress.py`, `diagnostics.py` | Durable stages, read-only status, opt-in forensic scans/compaction, upgrade, doctor, holdings, demo |
 
 ## Transaction boundaries and recovery
 
@@ -46,3 +46,19 @@ Every official forecast retains model IDs, calibration/evaluation metadata, feat
 All production bars calls take `MarketDataSymbol` references returned by the master. Validation combines asset class/exchange/security type/status/tradability, unique identity, typed-ID conflicts and broad syntax safeguards; passing a regex alone never authorizes a symbol. Ingestion and engine share this master. Holdings remain stored even if unresolved, but cannot authorize queries or healthy reviews. Features and labels require resolution; ranking checks master eligibility. Reports consume those filtered outputs. Historical forecast settlement reads retained local archives only and never initiates provider symbol queries.
 
 Corporate-action annotations attach separately typed references to the original event; unknown/private distribution securities stay event provenance. SEC enrichment starts with resolved tickers and attaches CIKs to asset identity. News is fetched globally and joins only validated feature tickers. Neither path creates assets. One-off invalid symbols are isolated; aggregate failure budgets and existing coverage/benchmark gates prevent a widespread universe defect from silently producing forecasts.
+
+
+## Schema 3 ingestion recovery
+
+See [the 2.0.3 repair record](docs/BOOTSTRAP_REPAIR.md) for migration, page atomicity,
+legacy-state limitations and exact commands. SQLite helpers join caller-owned
+transactions. Corporate actions and news persist every provider page and next cursor
+in one FULL synchronous WAL transaction; 31-day windows bound expired-token replay.
+Raw action receipts preserve existing revisions and skip repeat normalization.
+A resumable rowid-based legacy backfill creates those receipts without inventing
+proof of old feed completeness. No runtime data or historical observations are deleted.
+
+SEC commits bounded row batches and reuses cached response files; FRED retains page
+offsets and frozen vintage cutoffs. Features and labels cache completed symbols;
+models cache completed horizons. Read-only status consults indexed stage/run metadata
+and saved universe/warehouse summaries, with a writer-lock liveness probe.

@@ -1,5 +1,7 @@
 # STOX-AI
 
+**2.0.3 bootstrap repair:** if you have an existing interrupted bootstrap, follow the [non-destructive upgrade and resume procedure](docs/BOOTSTRAP_REPAIR.md) before restarting. It preserves `.stox`, adds page checkpoints and batches database writes. `stox status` is now a fast read-only command.
+
 Local, on-demand U.S. stock and ordinary-ETF research for **20, 30, 60 and 90 calendar days**, with 30D as the primary horizon. The routine command is `stox run`. No trades, brokerage account access, capital allocation, paid AI API, email, daemon or cloud runtime.
 
 **Release status:** offline-tested software with real provider adapters. No live credentials or real-market training were used in development. A successful synthetic demonstration proves software behavior, not forecasting accuracy. Live data access, full-universe bootstrap duration and prospective usefulness must be established locally. The engine can legitimately produce no qualifying opportunities, including for an extended period. Read [known limitations](#limitations) before interpreting results.
@@ -43,7 +45,7 @@ stox bootstrap             # Resumable historical ingestion, training and report
 
 The live doctor checks Alpaca assets, historical SIP bars, news and corporate actions; SEC; a simple FRED DGS10 observation; and Alpha Vantage only if configured. `--vintages` adds a separately reported ALFRED as-of snapshot check. An ALFRED warning does not change the ordinary FRED result. PASS means the endpoint responded as expected, not that its entire historical dataset is complete. Core failures return a nonzero exit status. Optional failures produce WARN. The SIP doctor uses five completed historical sessions, with New York midnight boundaries and an end timestamp older than the Basic recent-data window. It works during market hours, immediately after close, on weekends and on holidays. This connectivity canary does not require today's bar or bypass the stricter freshness gate used by `stox run`. Provider HTTP errors include bounded, credential-redacted response details.
 
-The first full-universe bootstrap may take many hours, especially SEC history and provider-limited ingestion. Progress is durable per security/feed. Ctrl-C then rerun the same command to resume. No training model or market data is shipped in Git. Keep the external drive mounted while running.
+The first full-universe bootstrap may take many hours, especially SEC history and provider-limited ingestion. Progress is durable per security and event page; explicit stage summaries show progress. Legacy unfinished event feeds need the receipt backfill described in the upgrade guide. Ctrl-C then rerun the same command to resume. No training model or market data is shipped in Git. Keep the external drive mounted while running.
 
 ## Normal operation
 
@@ -118,7 +120,7 @@ SQLite holds transactional audit state; compressed per-symbol Parquet stores mar
 
 Stop with Ctrl-C, wait for process exit, then unmount the drive. There is no background daemon. For a manual backup, stop the application and copy the entire data root and configuration to another drive; keep credentials private. Restore that directory and select its root in config. No recurring backup archives are created.
 
-Before upgrading, stop STOX-AI and make a manual backup. Run `git pull --ff-only`, then `bash scripts/setup.sh`, `source .venv/bin/activate`, `stox doctor`, and the tests. The database rejects newer unsupported schema versions rather than guessing a downgrade. Schema version 2 adds security identity, quarantine and history-ownership tables plus holding-resolution fields. The migration preserves existing bars, event revisions, holdings, forecasts/outcomes and valid checkpoints; no data deletion or reset is required.
+Before upgrading, stop STOX-AI. Preserve the entire existing data directory; a separate backup is optional. For 2.0.3 follow the upgrade guide above. For ordinary source updates, run `git pull --ff-only`, then `bash scripts/setup.sh`, `source .venv/bin/activate`, `stox doctor`, and the tests. The database rejects newer unsupported schema versions rather than guessing a downgrade. Schema version 2 adds security identity, quarantine and history-ownership tables plus holding-resolution fields. The migration preserves existing bars, event revisions, holdings, forecasts/outcomes and valid checkpoints; no data deletion or reset is required.
 
 ## Troubleshooting
 
@@ -154,9 +156,9 @@ Corporate actions retain all original identifiers and their roles, including non
 
 A symbol-specific provider rejection quarantines that asset, logs its reason, and continues with other securities. It is retried after seven days or when authoritative metadata changes. Authentication, rate-limit, server and general request errors still fail the run. At least two failed intended active/tradable assets exceeding the configured 5% identity-failure budget stop processing with an aggregate diagnostic. These limits are configurable in `config.toml`.
 
-Bootstrap and `stox status` show discovery, classification, inactive, non-queryable, identifier-failure, missing-history, price/liquidity and final eligible counts. `stox universe` includes individual exclusion reasons. Categories overlap; classification counts alone do not imply recommendation eligibility. Prices/history must be downloaded before data-dependent gates can be evaluated; fresh observations continue to update below-threshold securities so eligibility can recover. Recommendations retain the configured $5 minimum, liquidity/history and model gates.
+Bootstrap and `stox universe` calculate discovery, classification, inactive, non-queryable, identifier-failure, missing-history, price/liquidity and final eligible counts. `stox universe` includes individual exclusion reasons. `stox status` reports the last saved summary and its timestamp. Categories overlap; classification counts alone do not imply recommendation eligibility. Prices/history must be downloaded before data-dependent gates can be evaluated; fresh observations continue to update below-threshold securities so eligibility can recover. Recommendations retain the configured $5 minimum, liquidity/history and model gates.
 
-To resume an interrupted bootstrap, keep the same configuration and data root, then run from the repository:
+To resume an interrupted bootstrap, keep the same configuration and data root, follow the [2.0.3 upgrade guide](docs/BOOTSTRAP_REPAIR.md); for normal subsequent resumes use:
 
 ```bash
 git pull --ff-only

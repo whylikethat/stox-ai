@@ -1,5 +1,6 @@
 from __future__ import annotations
 import time
+import random
 import html
 import json
 import re
@@ -56,14 +57,14 @@ class HTTP:
             except requests.RequestException:
                 if attempt == 3:
                     raise ProviderError(f'{host}: connection failed after retries') from None
-                self.sleep(2 ** attempt)
+                self.sleep(2 ** attempt + random.uniform(0,0.25))
                 continue
             code = response.status_code
             if code == 429 or code >= 500:
                 if attempt < 3:
                     retry = response.headers.get('Retry-After','')
                     delay = float(retry) if retry.replace('.','',1).isdigit() else 2 ** attempt
-                    self.sleep(min(60,max(delay,2 ** attempt)))
+                    self.sleep(min(60,max(delay,2 ** attempt)+random.uniform(0,0.25)))
                     continue
             if code != 200:
                 detail = sanitized_response(response, url, params, headers)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+from collections import defaultdict
+from pathlib import Path
 from .actions import adjusted_history, relevant, total_return, UnresolvedAction
 from .storage import digest
 from .security import SecurityMaster
@@ -33,15 +35,20 @@ def market_features(frame, actions, calendar):
     f['return_1'] = ret
     return f
 
-def build_features(store, symbols, calendar, cutoff, max_rows=250_000):
+def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=None):
     actions = store.records('actions')
+    by_symbol=defaultdict(list)
+    for a in actions:
+        tickers=set(a.get('resolved_tickers',[])) | {a.get(k) for k in ('symbol','old_symbol','new_symbol','initiating_symbol','target_symbol')}
+        for ticker in tickers-{None,''}: by_symbol[ticker].append(a)
     frames,errors = [],{}
     total_rows=sum(r[1] for r in store.warehouse_summary())
     stride=max(1,int(np.ceil(total_rows/max_rows)))
     reference=store.bars('SPY')
-    benchmark=market_features(reference,relevant(actions,'SPY'),calendar).set_index('session') if not reference.empty else None
+    benchmark=market_features(reference,by_symbol['SPY'],calendar).set_index('session') if not reference.empty else None
     master=SecurityMaster(store)
-    for symbol in symbols:
+    for index,symbol in enumerate(symbols):
+        if progress and index%25==0: progress.update(processed=index)
         try:
             master.resolve(symbol)
         except ValueError as exc:
@@ -57,7 +64,7 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000):
         try:
             import hashlib
             from pathlib import Path
-            aa=relevant(actions,symbol)
+            aa=by_symbol[symbol]
             key=digest([symbol,str(bars.iloc[-1].session),len(bars),aa,bars[['open','close','volume']].sum().to_dict(),'causal-v2'])
             cache=store.root/'cache'/('features-'+digest(symbol)[:20]+'.parquet')
             marker=cache.with_suffix('.key')
@@ -97,6 +104,7 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000):
         affected=(result.symbol==correction['symbol']) & (pd.to_datetime(result.session)>=day) & (pd.to_datetime(result.session)<=day+pd.Timedelta(days=370)) & (issues<pd.Timestamp(correction['correction_available_at']))
         result.loc[affected,'revision_safe']=False
     result['feature_version'] = 'causal-v2'
+    if progress: progress.update(processed=len(symbols))
     return result,errors
 
 def enrich(frame, store):
@@ -105,13 +113,19 @@ def enrich(frame, store):
     filings = store.records('filings')
     macro = store.records('macro')
     facts = store.records('facts')
+    news_by,filings_by,facts_by=defaultdict(list),defaultdict(list),defaultdict(list)
+    for row in news:
+        for symbol in set(row.get('symbols',[])): news_by[symbol].append(row)
+    for row in filings: filings_by[row.get('symbol')].append(row)
+    for row in facts:
+        if row.get('namespace')=='us-gaap' and row.get('unit')=='USD': facts_by[row.get('symbol')].append(row)
     for name in sum([v for k,v in FAMILIES.items() if k!='price'],[]):
         result[name] = np.nan
     for symbol, indices in result.groupby('symbol').groups.items():
         idx = list(indices)
         times = pd.to_datetime(result.loc[idx,'issue_at'],utc=True)
-        n = [r for r in news if symbol in r.get('symbols',[])]
-        fs = [r for r in filings if r.get('symbol')==symbol]
+        n = news_by[symbol]
+        fs = filings_by[symbol]
         for field, rows, stamp_fn in (
             ('news_count',n,lambda r:r.get('updated_at') or r['created_at']),
             ('news_negative',[r for r in n if any(w in (r.get('headline','')+' '+r.get('summary','')).lower() for w in NEGATIVE)],lambda r:r.get('updated_at') or r['created_at']),
@@ -120,7 +134,7 @@ def enrich(frame, store):
                 stamps = np.sort(pd.to_datetime([stamp_fn(r) for r in rows],utc=True).astype('int64'))
                 vals = times.astype('int64').to_numpy()
                 result.loc[idx,field] = np.searchsorted(stamps,vals,side='right')-np.searchsorted(stamps,vals-30*86400*10**9,side='right')
-        ff = [r for r in facts if r.get('symbol')==symbol and r.get('namespace')=='us-gaap' and r.get('unit')=='USD']
+        ff = facts_by[symbol]
         if ff:
             # Facts with incomparable fiscal durations are excluded from margin/growth estimates.
             for concept,target in [('Assets','assets_log'),('Liabilities','liabilities')]:
@@ -170,16 +184,26 @@ def asof_values(times, rows, value, period='end'):
     pos = np.searchsorted(np.asarray(timeline),pd.to_datetime(times,utc=True).astype('int64'),side='right')-1
     return np.array([values[p] if p>=0 else np.nan for p in pos])
 
-def make_labels(features, store, calendar, horizons, friction):
+def make_labels(features, store, calendar, horizons, friction, progress=None):
     output = []
     actions = store.records('actions')
-    for symbol,g in features.groupby('symbol'):
+    for index,(symbol,g) in enumerate(features.groupby('symbol')):
+        if progress: progress.update(processed=index)
         try:
             SecurityMaster(store).resolve(symbol)
         except ValueError:
             continue
         bars = store.bars(symbol).set_index('session')
         aa = relevant(actions,symbol)
+        # A finished symbol's expensive labels are reusable after interruption. The key
+        # includes all input features, prices, actions and label parameters, never just dates.
+        key=digest([g.to_json(orient='split',date_format='iso'),bars.to_json(orient='split',date_format='iso'),aa,list(horizons),friction,'labels-v1'])
+        cache=store.root/'cache'/('labels-'+digest(symbol)[:20]+'.parquet')
+        marker=cache.with_suffix('.key')
+        if cache.exists() and marker.exists() and marker.read_text()==key:
+            output.extend(pd.read_parquet(cache).to_dict('records'))
+            continue
+        begin=len(output)
         for row in g.to_dict('records'):
             if not row.get('revision_safe',True):
                 continue
@@ -195,6 +219,14 @@ def make_labels(features, store, calendar, horizons, friction):
                 except UnresolvedAction:
                     continue
                 output.append({**row,'horizon':h,'entry_session':entry,'label_end':end,'label_available_at':calendar.close(end).isoformat(),'target':y})
+        cache.parent.mkdir(parents=True,exist_ok=True)
+        temporary=cache.with_suffix('.tmp')
+        pd.DataFrame(output[begin:]).to_parquet(temporary,index=False)
+        temporary.replace(cache)
+        marker_tmp=marker.with_suffix('.tmp-key')
+        marker_tmp.write_text(key)
+        marker_tmp.replace(marker)
+    if progress: progress.update(processed=features.symbol.nunique())
     result=pd.DataFrame(output)
     if not result.empty:
         for symbol in ('SPY','QQQ'):

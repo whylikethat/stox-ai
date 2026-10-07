@@ -8,7 +8,7 @@ from stox.security import SecurityMaster,MarketDataSymbol,identifier_kind
 from stox.providers.alpaca import Alpaca
 from stox.providers.http import ProviderError
 from stox.ingestion import Ingestor
-from stox.storage import Store
+from stox.storage import Store,SCHEMA
 from stox.holdings import add
 from stox.universe import eligible
 
@@ -48,6 +48,10 @@ class FixtureAlpaca:
             yield {ticker:rows[:1]}
             raise ProviderError('data.alpaca.markets: HTTP 500: retry exhausted',status_code=500)
         yield {ticker:[] if ticker in self.empty else rows}
+
+    def event_page(self,feed,start,end,cursor=None,snapshot=None):
+        rows=copy.deepcopy(FIXTURE['actions']) if feed=='actions' else []
+        return [r for r in rows if start <= str(r.get('ex_date') or r.get('effective_date') or start)[:10] <= end],None
 
     def actions(self,*args): yield copy.deepcopy(FIXTURE['actions'])
     def news(self,*args): yield []
@@ -231,7 +235,7 @@ def test_schema_one_migration_retains_holdings_checkpoints_and_audit(tmp_path):
     """)
     db.close()
     store=Store(root)
-    assert store.db.execute('PRAGMA user_version').fetchone()[0]==2
+    assert store.db.execute('PRAGMA user_version').fetchone()[0]==SCHEMA
     assert store.checkpoint('bars:GOOD')=='2025-01-07'
     holding=dict(store.db.execute('SELECT * FROM holdings').fetchone())
     assert holding['id']==4 and holding['shares']==2

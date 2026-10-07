@@ -16,6 +16,8 @@ max_participation = 0.005
 soft_storage_gb = 100.0
 hard_storage_gb = 150.0
 av_daily_budget = 20
+# Brief repeated invocations reuse covered event snapshots; later polls use correction overlaps.
+event_refresh_minutes = 15
 retrain_days = 30
 min_new_labels = 500
 max_training_rows = 250000

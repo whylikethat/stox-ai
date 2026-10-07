@@ -59,25 +59,42 @@ class SecurityMaster:
     def __init__(self,store):
         self.store=store
         self.db=store.db
+        self._resolution_cache = {}
 
     def identifier(self,entity,kind,value,source,role='',effective=''):
         if value is None or value=='':
             return
-        with self.db:
+        with self.store.transaction():
             self.db.execute('INSERT OR IGNORE INTO security_identifiers VALUES(?,?,?,?,?,?,?)',
                             (entity,kind,str(value),source,role,str(effective or ''),now_iso()))
 
     def refresh(self,assets,stamp):
+        with self.store.transaction():
+            self._refresh(assets,stamp)
+
+    def _refresh(self,assets,stamp):
         """Snapshot validation. Raw asset/event records and existing prices stay untouched."""
         if not isinstance(assets,list) or not assets:
             raise RuntimeError('Universe validation failed: asset snapshot is empty or invalid')
-        known_ids={str(a[k]) for a in assets for k in IDENTIFIER_FIELDS if a.get(k)}
-        known_ids.update(r[0] for r in self.db.execute("SELECT value FROM security_identifiers WHERE kind IN ('cusip','isin','figi','alpaca_asset_id','provider_asset_id','sec_cik')"))
+        by_id = {}
+        snapshot_conflicts=set()
+        for a in assets:
+            key = str(a.get('id') or 'unresolved:'+digest(a))
+            previous = by_id.get(key)
+            if previous and previous.get('status') == 'active' and a.get('status') != 'active':
+                continue
+            if previous and previous.get('status') == a.get('status') and previous != a:
+                snapshot_conflicts.add(key)
+            by_id[key] = a
+        assets = list(by_id.values())
+        known_ids={str(a[k]) for a in assets for k in IDENTIFIER_FIELDS if k!='provider_id' and a.get(k)}
+        # Only this authoritative asset snapshot can define namespace conflicts.
+        # Event-only identifiers must not pollute future ticker validation.
         counts={}
         for a in assets:
             if a.get('status')=='active' and a.get('tradable') is True:
                 counts[a.get('symbol')]=counts.get(a.get('symbol'),0)+1
-        with self.db:
+        with self.store.transaction():
             self.db.execute("UPDATE security_master SET queryable=0,reason='absent from current asset snapshot',present=0")
         for a in assets:
             aid=str(a.get('id') or 'unresolved:'+digest(a))
@@ -89,6 +106,7 @@ class SecurityMaster:
             intended=(category in ('common','etf') and a.get('status')=='active' and a.get('tradable') is True)
             valid_ticker=bool(a.get('id')) and ticker_shape(token) and not kind
             reasons=[]
+            if aid in snapshot_conflicts: reasons.append('identifier-resolution failure: conflicting provider metadata for same asset ID')
             if category not in ('common','etf'): reasons.append('excluded asset class/exchange or unverified security type')
             if a.get('status')!='active': reasons.append('inactive/unlisted')
             if a.get('tradable') is not True: reasons.append('non-tradable or tradability unverified')
@@ -100,7 +118,7 @@ class SecurityMaster:
                 if quarantine['metadata_hash']==mh and pd.Timestamp(quarantine['retry_after'])>pd.Timestamp(stamp):
                     reasons.append(quarantine['reason'])
                 else:
-                    with self.db: self.db.execute('DELETE FROM security_quarantine WHERE asset_id=?',(aid,))
+                    with self.store.transaction(): self.db.execute('DELETE FROM security_quarantine WHERE asset_id=?',(aid,))
             prior=self.db.execute('SELECT market_symbol FROM security_master WHERE asset_id=?',(aid,)).fetchone()
             if prior and prior[0] and prior[0]!=token:
                 self.identifier(aid,'historical_ticker',prior[0],'alpaca_assets','prior_ticker',stamp)
@@ -109,17 +127,17 @@ class SecurityMaster:
                 reasons.append('identifier-resolution failure: ticker belongs to different archived asset; history not merged')
             reason='; '.join(reasons)
             ticker=token if valid_ticker else None
-            with self.db:
+            with self.store.transaction():
                 self.db.execute('INSERT OR REPLACE INTO security_master VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                                 (aid,ticker,str(token or ''),category,a.get('status','unknown'),int(a.get('tradable') is True),int(not reasons),reason,mh,encode(a),stamp,1,int(intended)))
             self.store.record('security_snapshots',aid,{'asset_id':aid,'market_data_symbol':ticker,'queryable':not reasons,'reason':reason,'metadata':a},stamp)
             for field,id_kind in IDENTIFIER_FIELDS.items():
                 if a.get(field): self.identifier(aid,id_kind,a[field],'alpaca_assets',field)
-            if ticker: self.identifier(aid,'ticker',ticker,'alpaca_assets','current_ticker',stamp)
+            if ticker: self.identifier(aid,'ticker',ticker,'alpaca_assets','current_ticker',stamp) if not prior or prior[0]!=ticker else None
             elif token: self.identifier(aid,kind or 'unresolved_provider_symbol',token,'alpaca_assets','symbol')
-            if reasons:
-                logging.getLogger('stox').info(encode({'stage':'universe','asset_id':aid,'provider_symbol':token,'queryable':False,'reason':reason}))
+
         self.store.advance('security_master',stamp)
+        self._resolution_cache = {}
 
     def ensure(self,cutoff=None):
         if not self.db.execute('SELECT 1 FROM security_master LIMIT 1').fetchone():
@@ -136,13 +154,13 @@ class SecurityMaster:
 
     def resolve_identifier(self,kind,value):
         """Explicitly typed mapping for callers that genuinely have an identifier, not a ticker."""
-        rows=self.db.execute('SELECT DISTINCT s.market_symbol FROM security_identifiers i JOIN security_master s ON s.asset_id=i.entity_id WHERE i.kind=? AND i.value=? AND i.source=\'alpaca_assets\' AND s.queryable=1 AND s.present=1',(kind,str(value))).fetchall()
+        rows=self.db.execute('SELECT DISTINCT s.market_symbol FROM security_identifiers i INDEXED BY asset_identifier_lookup JOIN security_master s ON s.asset_id=i.entity_id WHERE i.kind=? AND i.value=? AND i.source=\'alpaca_assets\' AND s.queryable=1 AND s.present=1',(kind,str(value))).fetchall()
         if len(rows)!=1:
             raise ValueError(f'No unique authoritative {kind} mapping')
         return self.resolve(rows[0][0])
 
     def requests(self,cfg):
-        with self.db:
+        with self.store.transaction():
             self.db.execute("UPDATE health SET status='INACTIVE' WHERE provider LIKE 'security-request:%'")
         requested=set(cfg.symbols)|{'SPY','QQQ'}|{r[0] for r in self.db.execute('SELECT symbol FROM holdings WHERE active=1')}
         if not cfg.symbols:
@@ -163,7 +181,7 @@ class SecurityMaster:
 
     def quarantine(self,reference,reason,stamp):
         row=self.db.execute('SELECT metadata_hash FROM security_master WHERE asset_id=?',(reference.alpaca_asset_id,)).fetchone()
-        with self.db:
+        with self.store.transaction():
             self.db.execute('INSERT OR REPLACE INTO security_quarantine VALUES(?,?,?,?,?)',
                             (reference.alpaca_asset_id,row[0],reason,stamp,(pd.Timestamp(stamp)+pd.Timedelta(days=7)).isoformat()))
             self.db.execute('UPDATE security_master SET queryable=0,reason=? WHERE asset_id=?',(reason,reference.alpaca_asset_id))
@@ -171,7 +189,8 @@ class SecurityMaster:
         logging.getLogger('stox').warning(encode({'stage':'quarantine','ticker':reference.ticker,'asset_id':reference.alpaca_asset_id,'reason':reason}))
 
     def bind_history(self,reference,stamp):
-        with self.db:
+        if self.db.execute('SELECT 1 FROM price_history_owners WHERE ticker=?',(reference.ticker,)).fetchone(): return
+        with self.store.transaction():
             self.db.execute('INSERT OR IGNORE INTO price_history_owners VALUES(?,?,?)',(reference.ticker,reference.alpaca_asset_id,stamp))
 
     def annotate_action(self,action):
@@ -189,11 +208,16 @@ class SecurityMaster:
             elif 'asset_id' in field.lower(): kind='alpaca_asset_id'
             elif 'symbol' in field.lower(): kind=identifier_kind(value) or 'provider_symbol'
             else: continue
-            resolved=None
-            try:
-                if kind=='provider_symbol': resolved=self.resolve(value)
-                elif kind in ('cusip','isin','figi','alpaca_asset_id'): resolved=self.resolve_identifier(kind,value)
-            except ValueError: pass
+            cache_key=(kind,value)
+            if cache_key not in self._resolution_cache:
+                resolved=None
+                try:
+                    if kind=='provider_symbol': resolved=self.resolve(value)
+                    elif kind in ('cusip','isin','figi','alpaca_asset_id'): resolved=self.resolve_identifier(kind,value)
+                except ValueError: pass
+                if len(self._resolution_cache)>=10000: self._resolution_cache.clear()
+                self._resolution_cache[cache_key]=resolved
+            resolved=self._resolution_cache[cache_key]
             stored_kind='ticker' if resolved and kind=='provider_symbol' else kind
             if kind=='provider_symbol' and ('old' in field or 'prior' in field) and self.db.execute('SELECT 1 FROM security_master WHERE market_symbol=?',(value,)).fetchone():
                 stored_kind='historical_ticker'
@@ -221,16 +245,15 @@ class SecurityMaster:
                 if r['intended_candidate']: result['systemic_identifier_failures']+=1
             if not r['queryable']: continue
             result['queryable_tickers']+=1
-            bars=self.store.bars(r['market_symbol'])
-            if bars.empty:
+            summary=self.store.bar_summary(r['market_symbol'])
+            if summary is None:
                 result['no_price_history']+=1
                 continue
-            latest=bars.sort_values('session').iloc[-1]
-            if latest.close < cfg.min_price:
+            if summary['close'] < cfg.min_price:
                 result['below_minimum_price']+=1
                 continue
             threshold=max(cfg.min_dollar_volume,cfg.liquidity_reference_usd/cfg.max_participation)
-            if len(bars)<cfg.min_history or (bars.close*bars.volume).tail(60).median()<threshold or (session and latest.session!=session):
+            if summary['rows']<cfg.min_history or summary['dollar_volume']<threshold or (session and summary['last_session']!=session):
                 result['insufficient_liquidity_data']+=1
                 continue
             result['final_eligible_universe']+=1
@@ -240,6 +263,7 @@ class SecurityMaster:
 
     def persist_diagnostics(self,cfg,session=None):
         result=self.diagnostics(cfg,session)
+        self.store.meta('universe',result)
         self.store.record('universe_diagnostics','latest',result,now_iso())
         logging.getLogger('stox').info(encode({'stage':'universe-summary',**result}))
         return result
@@ -256,6 +280,6 @@ class SecurityMaster:
                 ref=self.resolve(h['symbol']); aid,status=ref.alpaca_asset_id,'resolved'
             except ValueError:
                 aid,status=None,'unresolved/non-queryable'
-            with self.db:
+            with self.store.transaction():
                 self.db.execute('UPDATE holdings SET security_id=?,resolution_status=?,input_kind=? WHERE id=?',
                                 (aid,status,identifier_kind(h['symbol']) or 'ticker',h['id']))

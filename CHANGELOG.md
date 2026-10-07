@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.3 — 2026-10-07
+
+- Batch event/identifier writes in caller-owned FULL-durability transactions; add atomic page/cursor receipts and bounded date-window resume for actions/news.
+- Preserve existing runtime data with schema-3 migration and resumable raw-action receipt backfill; avoid repeat normalization and payload insertion on legacy replay.
+- Replace expensive status scans with read-only indexed metadata, writer liveness, stage progress and cached summaries. Add opt-in deep diagnostics/integrity checks and explicit compaction.
+- Stop timestamp-only ticker-identifier growth and event-ID contamination of asset validation; recognize listed trust-series fund structures without a ticker allowlist.
+- Reuse bar summaries, partial durable bar history, completed SEC responses, FRED offsets, feature/label caches and trained horizons; add stage summaries and retry jitter.
+- Add fault-injection, full-engine bootstrap/resume, migration, transaction-count and large-status regression tests. No runtime databases, credentials or reports are shipped.
+
 ## 2.0.2 — 2026-10-03
 
 - Added typed security identity and authoritative active/tradable asset validation at universe and bars boundaries; fixed inactive/non-ticker assets and unvalidated holdings/config inputs reaching price ingestion.

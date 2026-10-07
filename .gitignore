@@ -27,3 +27,9 @@ logs/
 *.log
 *.tmp
 config.toml
+
+# Local diagnostics and tooling caches
+cache/
+.coverage
+htmlcov/
+.mypy_cache/

@@ -5,11 +5,14 @@ DISALLOWED = re.compile(r'\b(warrant|warrants|rights|units?|preferred|depositary
 
 def classify(asset):
     name = asset.get('name','')
-    if DISALLOWED.search(name) or any(x in asset.get('attributes',[]) for x in ('ptp_no_exception','ptp_with_exception')):
+    screened = re.sub(r'\bunit investment trust\b', 'investment trust', name, flags=re.I)
+    if DISALLOWED.search(screened) or any(x in asset.get('attributes',[]) for x in ('ptp_no_exception','ptp_with_exception')):
         return 'excluded'
     if asset.get('class') != 'us_equity' or asset.get('exchange') not in ('NYSE','NASDAQ','ARCA','AMEX','BATS','NYSEARCA'):
         return 'excluded'
-    if re.search(r'\b(ETF|exchange.traded fund)\b',name,re.I):
+    # Accept explicit fund metadata or recognizable listed investment-trust share structures.
+    # No ticker allowlist: QQQ's legacy provider name is 'Invesco QQQ Trust, Series 1'.
+    if asset.get('security_type') in ('etf','ETF') or re.search(r'\b(ETF|exchange.traded fund|unit investment trust)\b|\btrust[,\s]+series\s+\d+\b',name,re.I):
         return 'etf'
     if re.search(r'\b(common|ordinary|capital stock)\b',name,re.I):
         return 'common'

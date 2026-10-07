@@ -23,6 +23,7 @@ class Config:
     soft_storage_gb: float = 100
     hard_storage_gb: float = 150
     av_daily_budget: int = 20
+    event_refresh_minutes: int = 15
     retrain_days: int = 30
     min_new_labels: int = 500
     max_training_rows: int = 250_000
@@ -50,6 +51,8 @@ class Config:
         cfg = cls(root=location.resolve(), **values)
         if 30 not in cfg.horizons or any(h <= 0 for h in cfg.horizons) or len(set(cfg.horizons)) != len(cfg.horizons):
             raise ValueError('Horizons must be unique positive calendar-day values including 30.')
+        if not 0 <= cfg.event_refresh_minutes <= 1440:
+            raise ValueError('event_refresh_minutes must be between 0 and 1440')
         if cfg.friction_bps < 0 or not 0 < cfg.soft_storage_gb < cfg.hard_storage_gb:
             raise ValueError('Invalid friction or storage limits.')
         if not 0 < cfg.max_identifier_failure_fraction <= 1 or cfg.min_identifier_failures < 2:

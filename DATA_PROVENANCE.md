@@ -43,3 +43,17 @@ Historical asset coverage and security-type classification are approximations. N
 ## Typed identifier provenance (2.0.2)
 
 Corporate-action IDs and CUSIP/ISIN/FIGI/asset references are not ticker fields. Raw payloads remain available, while normalized `security_references` identify type, role, authoritative asset mapping (if any) and queryability. Old/new identifiers in distributions, renames and reverse splits do not automatically alter the universe. A CUSIP may resolve to a ticker only via an explicit authoritative asset mapping; it is never submitted to stock historical-bars `symbols`. SEC CIK enrichment and event-only mappings cannot authorize price queries. Historical identifiers retain provenance without implying a reconstructed ticker chain.
+
+
+## Resume receipts (2.0.3)
+
+Provider action identity excludes derived local security annotations. Original raw
+versions, effective dates, first-seen/availability timestamps and typed references
+are retained. Legacy rows do not establish provider pagination completeness; a
+receipt backfill supports safe reuse without guessing a completed range. Date windows
+and correction overlaps do not guarantee capture of revisions announced outside
+provider coverage/lookback. See [BOOTSTRAP_REPAIR](docs/BOOTSTRAP_REPAIR.md).
+
+Reference contracts reviewed for this repair:
+- [Alpaca corporate actions](https://docs.alpaca.markets/us/v1.1/reference/corporateactions-1)
+- [SEC prospectus describing the QQQ Trust Series 1 structure](https://www.sec.gov/Archives/edgar/data/1067839/000119312524187704/d733468d497.htm)

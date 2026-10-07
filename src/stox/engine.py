@@ -17,6 +17,7 @@ from .ranking import forecast_rows,leaderboards
 from .predictions import settle,issue,performance
 from .holdings import review
 from .reporting import evidence,write_reports
+from .progress import Progress
 
 
 def git_commit():
@@ -36,14 +37,17 @@ def run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
     logger=logging.getLogger('stox')
     logger.setLevel(logging.INFO)
     logger.addHandler(handler)
+    progress=Progress(store,rid)
     try:
         with store.lock():
             store.storage_check(cfg.soft_storage_gb,cfg.hard_storage_gb)
             with store.db:
+                store.db.execute("UPDATE runs SET status='interrupted',finished_at=? WHERE status='running'",(now_iso(),))
+                store.db.execute("UPDATE stages SET status='interrupted',finished_at=? WHERE status='running'",(now_iso(),))
                 store.db.execute('INSERT INTO runs VALUES(?,?,?,?,?)',(rid,started,None,'running','{}'))
             warnings=[]
             if not offline:
-                session,warnings=Ingestor(cfg,store,cal).run(started)
+                session,warnings=Ingestor(cfg,store,cal,progress=progress).run(started)
             else:
                 session=cal.completed(started)
                 warnings.append('Offline run: no providers contacted; cached data only')
@@ -71,89 +75,94 @@ def run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                 raise RuntimeError('FORECASTING BLOCKED: corporate-action feed has no successful checkpoint')
             if pd.Timestamp(store.checkpoint('actions')) < cal.close(session):
                 raise RuntimeError('FORECASTING BLOCKED: corporate-action checkpoint is stale')
-            logger.info(encode({'run':rid,'stage':'features'}))
-            features,errors=build_features(store,symbols,cal,cal.close(session).isoformat(),cfg.max_training_rows)
-            warnings.extend(f'{s}: {reason}' for s,reason in errors.items())
-            labels=make_labels(features,store,cal,cfg.horizons,cfg.friction_bps)
-            if labels.empty:
-                raise RuntimeError('FORECASTING BLOCKED: insufficient mature labels; bootstrap more history')
-            labels=labels[pd.to_datetime(labels.label_available_at,utc=True)<=utc(started)]
-            settlement=settle(store,cal,started,cfg.friction_bps)
-            warnings.extend(settlement['warnings'])
-            logger.info(encode({'run':rid,'stage':'models','label_rows':len(labels)}))
-            models=registry_train(labels,cfg,store,force_train,started)
+            with progress.stage('features',total=len(symbols)):
+                features,errors=build_features(store,symbols,cal,cal.close(session).isoformat(),cfg.max_training_rows,progress=progress)
+                warnings.extend(f'{s}: {reason}' for s,reason in errors.items())
+            with progress.stage('labels-and-settlement'):
+                labels=make_labels(features,store,cal,cfg.horizons,cfg.friction_bps,progress=progress)
+                if labels.empty:
+                    raise RuntimeError('FORECASTING BLOCKED: insufficient mature labels; bootstrap more history')
+                labels=labels[pd.to_datetime(labels.label_available_at,utc=True)<=utc(started)]
+                settlement=settle(store,cal,started,cfg.friction_bps)
+                warnings.extend(settlement['warnings'])
+            with progress.stage('models',total=len(cfg.horizons)):
+                logger.info(encode({'run':rid,'stage':'models','label_rows':len(labels)}))
+                models=registry_train(labels,cfg,store,force_train,started,progress=progress)
             if set(models)!=set(cfg.horizons):
                 raise RuntimeError('FORECASTING BLOCKED: all active horizons need trained models; inspect stox status')
-            # Fresh event cutoff is the run snapshot. Preserve price cutoff independently.
-            from .features import enrich
-            current=features.sort_values('session').groupby('symbol').tail(1).copy()
-            current['issue_at']=started
-            current=enrich(current,store)
-            rows=forecast_rows(current,assets,models,cfg,session)
-            health={r['provider']:r['status'] for r in store.db.execute('SELECT * FROM health')}
-            for row in rows:
-                for family,provider in (('news','news'),('fundamentals','sec'),('macro','fred')):
-                    if family in row['feature_families'] and health.get(provider)!='PASS' and not synthetic:
-                        row['qualified']=False
-                        row['exclusions'].append('Selected '+family+' source is degraded')
-                if row['exclusions'] and row['quality_label']=='High Confidence / Lower Return':
-                    row['quality_label']='Research only / below preferred return'
-            primary,across=leaderboards(rows)
-            for row in rows:
-                row['primary_rank']=next((p['rank'] for p in primary if p['symbol']==row['symbol'] and row['horizon']==30),None)
-                row['across_rank']=next((p['rank'] for p in across if p['symbol']==row['symbol'] and p['horizon']==row['horizon']),None)
-            holdings=review(store,rows,rid)
-            highlights={r['symbol'] for r in primary[:3]+across[:3]}|{h['symbol'] for h in holdings if h['status']!='HEALTHY'}
-            for holding in holdings:
-                holding['evidence']=evidence(store,holding['symbol'],started)
-            details=[]
-            with threadpool_limits(limits=cfg.threads):
-                for symbol in sorted(highlights|{r['symbol'] for r in primary+across}):
-                    forecasts=[r for r in rows if r['symbol']==symbol]
-                    fr=current[current.symbol==symbol]
-                    if not fr.empty and symbol in highlights:
-                        for r in forecasts:
-                            r['explanations']=models[r['horizon']].explain(fr.iloc[0].to_dict())
-                    details.append({'symbol':symbol,'forecasts':forecasts,'evidence':evidence(store,symbol,started)})
-            if any(not m.metadata['validated'] for m in models.values()):
-                warnings.append('One or more research models have not passed qualification; unvalidated horizons cannot issue official recommendations')
-            warnings.append('Historical universe reconstruction is approximate; historical asset metadata and revisions are incomplete before first local observation')
-            cleanup_models(store)
-            metadata={'version':__version__,'git_commit':git_commit(),'run_started':started,
-                      'market_session':session,'market_cutoff':cal.close(session).isoformat(),'event_cutoff':started,
-                      'news_checkpoint':store.checkpoint('news'),'sec_checkpoint':store.checkpoint('sec'),'macro_checkpoint':store.checkpoint('fred'),
-                      'model_ids':{str(h):m.model_id for h,m in models.items()},'feature_version':'causal-v2',
-                      'data_digest':digest([(s,store.checkpoint('bars:'+s)) for s in symbols]),'universe_digest':digest(assets),'universe_diagnostics':master.persist_diagnostics(cfg,session),
-                      'friction_bps':cfg.friction_bps,'provider_health':[dict(r) for r in store.db.execute('SELECT * FROM health')],
-                      'run_mode':'synthetic' if synthetic else 'offline' if offline else 'live',
-                      'ranking_rule':'P(gain) first; expected return within comparable calibration resolution',
-                      'limits':'No brokerage, trades, capital allocation, continuous monitoring, or tax advice'}
-            # Issuance occurs after all computation, never backdated to data fetch start.
-            issued=started if synthetic else now_iso()
-            metadata['forecast_issued_at']=issued
-            signature=digest([session,metadata['data_digest'],metadata['model_ids'],[(r['symbol'],r['horizon'],r['p_gain'],r['expected_return']) for r in rows]])
-            duplicate=store.checkpoint('last_forecast_signature')==signature
-            if duplicate:
-                warnings.append('Same market/model forecast snapshot: no duplicate official forecasts issued')
-                ids=[]
-            elif not synthetic and offline:
-                warnings.append('Offline research runs do not issue official prospective forecasts')
-                ids=[]
-            else:
-                ids=issue(store,cal,rows,issued,metadata)
-                store.advance('last_forecast_signature',signature)
-            report={'run_id':rid,'synthetic':synthetic,'metadata':metadata,'warnings':warnings,'primary_30d':primary,
-                    'across_horizons':across,'details':details,'research_candidates':rows,'holdings':holdings,
-                    'prospective':performance(store),'backtests':{str(h):m.metadata['evaluation'] for h,m in models.items()},
-                    'official_forecast_ids':ids,'settlement':settlement}
-            path=write_reports(cfg.root,report)
+            with progress.stage('ranking-and-reports'):
+                # Fresh event cutoff is the run snapshot. Preserve price cutoff independently.
+                from .features import enrich
+                current=features.sort_values('session').groupby('symbol').tail(1).copy()
+                current['issue_at']=started
+                current=enrich(current,store)
+                rows=forecast_rows(current,assets,models,cfg,session)
+                health={r['provider']:r['status'] for r in store.db.execute('SELECT * FROM health')}
+                for row in rows:
+                    for family,provider in (('news','news'),('fundamentals','sec'),('macro','fred')):
+                        if family in row['feature_families'] and health.get(provider)!='PASS' and not synthetic:
+                            row['qualified']=False
+                            row['exclusions'].append('Selected '+family+' source is degraded')
+                    if row['exclusions'] and row['quality_label']=='High Confidence / Lower Return':
+                        row['quality_label']='Research only / below preferred return'
+                primary,across=leaderboards(rows)
+                for row in rows:
+                    row['primary_rank']=next((p['rank'] for p in primary if p['symbol']==row['symbol'] and row['horizon']==30),None)
+                    row['across_rank']=next((p['rank'] for p in across if p['symbol']==row['symbol'] and p['horizon']==row['horizon']),None)
+                holdings=review(store,rows,rid)
+                highlights={r['symbol'] for r in primary[:3]+across[:3]}|{h['symbol'] for h in holdings if h['status']!='HEALTHY'}
+                for holding in holdings:
+                    holding['evidence']=evidence(store,holding['symbol'],started)
+                details=[]
+                with threadpool_limits(limits=cfg.threads):
+                    for symbol in sorted(highlights|{r['symbol'] for r in primary+across}):
+                        forecasts=[r for r in rows if r['symbol']==symbol]
+                        fr=current[current.symbol==symbol]
+                        if not fr.empty and symbol in highlights:
+                            for r in forecasts:
+                                r['explanations']=models[r['horizon']].explain(fr.iloc[0].to_dict())
+                        details.append({'symbol':symbol,'forecasts':forecasts,'evidence':evidence(store,symbol,started)})
+                if any(not m.metadata['validated'] for m in models.values()):
+                    warnings.append('One or more research models have not passed qualification; unvalidated horizons cannot issue official recommendations')
+                warnings.append('Historical universe reconstruction is approximate; historical asset metadata and revisions are incomplete before first local observation')
+                cleanup_models(store)
+                metadata={'version':__version__,'git_commit':git_commit(),'run_started':started,
+                          'market_session':session,'market_cutoff':cal.close(session).isoformat(),'event_cutoff':started,
+                          'news_checkpoint':store.checkpoint('news'),'sec_checkpoint':store.checkpoint('sec'),'macro_checkpoint':store.checkpoint('fred'),
+                          'model_ids':{str(h):m.model_id for h,m in models.items()},'feature_version':'causal-v2',
+                          'data_digest':digest([(s,store.checkpoint('bars:'+s)) for s in symbols]),'universe_digest':digest(assets),'universe_diagnostics':master.persist_diagnostics(cfg,session),
+                          'friction_bps':cfg.friction_bps,'provider_health':[dict(r) for r in store.db.execute('SELECT * FROM health')],
+                          'run_mode':'synthetic' if synthetic else 'offline' if offline else 'live',
+                          'ranking_rule':'P(gain) first; expected return within comparable calibration resolution',
+                          'limits':'No brokerage, trades, capital allocation, continuous monitoring, or tax advice'}
+                # Issuance occurs after all computation, never backdated to data fetch start.
+                issued=started if synthetic else now_iso()
+                metadata['forecast_issued_at']=issued
+                signature=digest([session,metadata['data_digest'],metadata['model_ids'],[(r['symbol'],r['horizon'],r['p_gain'],r['expected_return']) for r in rows]])
+                duplicate=store.checkpoint('last_forecast_signature')==signature
+                if duplicate:
+                    warnings.append('Same market/model forecast snapshot: no duplicate official forecasts issued')
+                    ids=[]
+                elif not synthetic and offline:
+                    warnings.append('Offline research runs do not issue official prospective forecasts')
+                    ids=[]
+                else:
+                    ids=issue(store,cal,rows,issued,metadata)
+                    store.advance('last_forecast_signature',signature)
+                report={'run_id':rid,'synthetic':synthetic,'metadata':metadata,'warnings':warnings,'primary_30d':primary,
+                        'across_horizons':across,'details':details,'research_candidates':rows,'holdings':holdings,
+                        'prospective':performance(store),'backtests':{str(h):m.metadata['evaluation'] for h,m in models.items()},
+                        'official_forecast_ids':ids,'settlement':settlement}
+            with progress.stage('report-export'):
+                path=write_reports(cfg.root,report)
             with store.db:
                 store.db.execute('UPDATE runs SET finished_at=?,status=?,metadata=? WHERE id=?',(now_iso(),'success',encode(metadata),rid))
             logger.info(encode({'run':rid,'stage':'complete','official_forecasts':len(ids)}))
+            print('Stage summary: '+', '.join(r['name']+'='+r['status'] for r in store.db.execute('SELECT name,status FROM stages WHERE run_id=? ORDER BY started_at',(rid,))),flush=True)
             return report,path
-    except Exception as exc:
+    except BaseException as exc:
         with store.db:
-            store.db.execute('UPDATE runs SET finished_at=?,status=?,metadata=? WHERE id=?',(now_iso(),'failed',encode({'error':str(exc)}),rid))
+            store.db.execute('UPDATE runs SET finished_at=?,status=?,metadata=? WHERE id=?',(now_iso(),'interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',encode({'error':str(exc) or type(exc).__name__}),rid))
         logger.error(encode({'run':rid,'stage':'failed','error':str(exc)}))
         raise
     finally:

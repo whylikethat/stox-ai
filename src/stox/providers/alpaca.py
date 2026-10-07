@@ -1,5 +1,6 @@
 from __future__ import annotations
 import pandas as pd
+from datetime import date, timedelta
 from .http import HTTP, ProviderError
 from ..security import MarketDataSymbol
 
@@ -51,6 +52,35 @@ class Alpaca:
             if 'news' not in page:
                 raise ProviderError('Alpaca: news field missing')
             yield page.get('news') or []
+
+    def event_page(self, feed, start, end, cursor=None, snapshot=None):
+        if feed not in ('actions','news'):
+            raise ValueError('Unsupported event feed')
+        params={'start':start,'end':end,'sort':'asc','limit':1000 if feed=='actions' else 50}
+        path='/v1/corporate-actions' if feed=='actions' else '/v1beta1/news'
+        if feed=='news':
+            params['start']=start+'T00:00:00Z'
+            # Adjacent news windows overlap at midnight, avoiding sub-microsecond gaps.
+            boundary=(date.fromisoformat(end)+timedelta(days=1)).isoformat()+'T00:00:00Z'
+            params['end']=min(boundary,snapshot or boundary)
+            params['include_content']='false'
+        if cursor: params['page_token']=cursor
+        raw=self.http.get(self.base+path,params=params,headers=self.headers)
+        key='corporate_actions' if feed=='actions' else 'news'
+        if not isinstance(raw,dict) or key not in raw:
+            raise ProviderError(f'Alpaca: {key} field missing')
+        content=raw[key] or ({} if feed=='actions' else [])
+        if feed=='actions':
+            if not isinstance(content,dict) or any(not isinstance(v,list) for v in content.values()):
+                raise ProviderError('Alpaca: malformed corporate_actions page')
+            rows=[{**row,'action_type':kind} for kind,group in content.items() for row in group]
+        else:
+            if not isinstance(content,list): raise ProviderError('Alpaca: malformed news page')
+            rows=content
+        token=raw.get('next_page_token')
+        if token is not None and not isinstance(token,str):
+            raise ProviderError('Alpaca: invalid page token type')
+        return rows,token or None
 
     def actions(self, start, end):
         for page in self.pages('/v1/corporate-actions',{'start':start[:10],'end':end[:10],'limit':1000,'sort':'asc'}):

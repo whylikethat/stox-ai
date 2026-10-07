@@ -2,6 +2,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import joblib
+import os
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
@@ -250,11 +251,12 @@ def train_horizon(frame,horizon,cfg):
     return champion,holdout
 
 
-def registry_train(labels,cfg,store,force=False,stamp=None):
+def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
     stamp=stamp or now_iso()
     results={}
     with threadpool_limits(limits=cfg.threads):
-        for horizon in cfg.horizons:
+        for index,horizon in enumerate(cfg.horizons):
+            if progress: progress.update(processed=index,horizon=horizon,force=True)
             existing=store.db.execute("SELECT * FROM models WHERE horizon=? AND status='champion' ORDER BY created_at DESC LIMIT 1",(horizon,)).fetchone()
             old=joblib.load(store.root/existing['path']) if existing else None
             new_count=int(((labels.horizon==horizon)&(labels.label_end>(old.metadata['holdout_end'] if old else '1900-01-01'))).sum()) if not labels.empty else 0
@@ -290,7 +292,11 @@ def registry_train(labels,cfg,store,force=False,stamp=None):
             (store.root/'models').mkdir(exist_ok=True)
             temporary=(store.root/rel).with_suffix('.tmp')
             joblib.dump(candidate,temporary,compress=3)
+            with temporary.open('rb') as file: os.fsync(file.fileno())
             temporary.replace(store.root/rel)
+            fd=os.open(store.root/'models',os.O_DIRECTORY)
+            try: os.fsync(fd)
+            finally: os.close(fd)
             with store.db:
                 if promote:
                     store.db.execute("UPDATE models SET status='retired' WHERE horizon=? AND status='champion'",(horizon,))
@@ -298,4 +304,5 @@ def registry_train(labels,cfg,store,force=False,stamp=None):
                 store.db.execute('INSERT INTO evaluations VALUES(?,?,?)',(mid,'backtest',encode(candidate.metadata['evaluation'])))
             results[horizon]=candidate if promote else old
             store.health(f'model:{horizon}','PASS' if results[horizon].metadata['validated'] else 'WARN','Validated champion' if results[horizon].metadata['validated'] else 'Research model; recommendation qualification has not passed')
+    if progress: progress.update(processed=len(cfg.horizons))
     return results

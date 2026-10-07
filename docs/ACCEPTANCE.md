@@ -20,3 +20,27 @@ This record distinguishes implemented offline functionality from unproven live b
 | Tests | Socket-blocked unit/integration suite and four-horizon synthetic end-to-end run | No credentialed provider calls; no real performance claims |
 
 The full user specification is retained in `BUILD_SPECIFICATION.md` for future audits. Unsupported items above are not represented as completed by stubs, invented data or fabricated validation results.
+
+
+## 2.0.3 bootstrap performance/resume repair — 2026-10-07
+
+- Full offline suite: **103 passed** (133.58 seconds on the development runner).
+- New recovery module contains **25 tests**, including a full-engine interruption,
+  resume through all four horizons and reports, and a second idempotent run.
+- Transaction benchmark: **11,000 input / 10,000 unique actions**, 30,000 typed
+  event identifiers, **11 page commits / 17 total commits** including job/stage
+  bookkeeping, **1.211 seconds** on local synthetic storage. The old design would
+  make roughly four transaction commits per input action for these three identifier
+  fields plus its payload. This is transaction-count evidence, not an external-drive
+  or live-provider runtime promise. FULL synchronous WAL remains enabled.
+- Status tested with 50,000 event rows and a SQL VM instruction budget; it performs
+  no provider calls, Parquet reads, schema migration or recursive storage walks.
+- Existing SIP/FRED doctor and `09175M861` regressions remain covered.
+- Compile checks and `git diff --check` pass. No separate lint/type-check gate is
+  configured in this repository.
+- Actual provider access, John's multi-GB database size attribution, the precise
+  historical identifier-count increase and actual QQQ metadata remain unverified.
+  The [upgrade guide](BOOTSTRAP_REPAIR.md) provides read-only diagnostics and
+  non-destructive commands. Legacy rows are reused but cannot prove missing old
+  provider pagination positions; the required one-time verification replay is
+  documented rather than falsely claimed to be skippable.

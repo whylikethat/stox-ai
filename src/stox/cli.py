@@ -2,6 +2,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import sqlite3
 from . import __version__
 from .config import Config
 from .storage import Store
@@ -24,6 +25,12 @@ def parser():
     s.add_argument('--live',action='store_true')
     s.add_argument('--vintages',action='store_true',help='With --live, separately test an ALFRED as-of snapshot')
     sub.add_parser('status')
+    s=sub.add_parser('compact',help='Explicit stopped-writer SQLite integrity check and compaction')
+    s.add_argument('--vacuum',action='store_true',required=True)
+    sub.add_parser('upgrade',help='Non-destructive schema upgrade and legacy action receipt backfill')
+    s=sub.add_parser('diagnose',help='Read-only local database diagnostics')
+    s.add_argument('--deep',action='store_true',help='Opt-in table/index scans; may take time')
+    s.add_argument('--integrity',action='store_true',help='Opt-in SQLite integrity check; stop bootstrap first')
     sub.add_parser('universe',help='Universe counts, unresolved references and quarantine reasons')
     s=sub.add_parser('report')
     s.add_argument('--format',choices=('html','json','md','ai'),default='html')
@@ -70,6 +77,30 @@ def main(argv=None):
             for r in results:
                 print(f'{r["status"]:4} {r["check"]}: {r["detail"]}')
             return 1 if any(r['status']=='FAIL' for r in results) else 0
+        elif args.command in ('status','diagnose'):
+            from .diagnostics import status,diagnose
+            payload=status(cfg.root) if args.command=='status' else diagnose(cfg.root,args.deep,args.integrity)
+            print(json.dumps(payload,indent=2))
+            if payload.get('integrity_check', ['ok']) != ['ok']:
+                return 1
+        elif args.command=='compact':
+            from .diagnostics import compact
+            print(json.dumps(compact(cfg.root),indent=2))
+        elif args.command=='upgrade':
+            from .progress import Progress
+            from .streams import reuse_legacy_actions
+            if not (cfg.root/'state.sqlite').is_file():
+                raise ValueError(f'No existing state.sqlite at {cfg.root}; upgrade refuses to initialize empty state. Check your original config/root.')
+            cfg.initialize()
+            store=Store(cfg.root)
+            try:
+                with store.lock():
+                    progress=Progress(store,'upgrade')
+                    with progress.stage('legacy-action-index'):
+                        reuse_legacy_actions(store,SecurityMaster(store),progress)
+                print('Upgrade complete. Existing bars, event revisions and checkpoints retained.')
+            finally:
+                store.close()
         elif args.command=='report':
             name={'html':'latest.html','json':'latest.json','md':'latest.md','ai':'latest_ai_review.md'}[args.format]
             path=cfg.root/'reports'/name
@@ -84,20 +115,6 @@ def main(argv=None):
                     master=SecurityMaster(store)
                     master.ensure()
                     print(json.dumps({'counts':master.diagnostics(cfg),'excluded':[dict(r) for r in store.db.execute("SELECT asset_id,provider_symbol,reason FROM security_master WHERE queryable=0")], 'unresolved_requests':[dict(r) for r in store.db.execute("SELECT * FROM health WHERE provider LIKE 'security-request:%' AND status='WARN'")]},indent=2))
-                elif args.command=='status':
-                    from .engine import git_commit
-                    payload={'version':__version__,'git_commit':git_commit(),'schema':store.db.execute('PRAGMA user_version').fetchone()[0],
-                             'last_run':dict(r) if (r:=store.db.execute('SELECT * FROM runs ORDER BY started_at DESC LIMIT 1').fetchone()) else None,
-                             'last_success':dict(r) if (r:=store.db.execute("SELECT * FROM runs WHERE status='success' ORDER BY started_at DESC LIMIT 1").fetchone()) else None,
-                             'checkpoints':[dict(r) for r in store.db.execute('SELECT * FROM checkpoints')],
-                             'models':[dict(r) for r in store.db.execute("SELECT id,horizon,created_at,status FROM models WHERE status='champion'")],
-                             'universe':SecurityMaster(store).diagnostics(cfg),
-                             'prospective_predictions':store.db.execute('SELECT count(*) FROM forecasts').fetchone()[0],
-                             'pending_entries':store.db.execute('SELECT count(*) FROM forecasts f LEFT JOIN entries e ON f.id=e.forecast_id WHERE e.forecast_id IS NULL').fetchone()[0],
-                             'outcomes':store.db.execute('SELECT count(*) FROM outcomes').fetchone()[0],
-                             'providers':[dict(r) for r in store.db.execute('SELECT * FROM health')],
-                             'storage':store.storage_check(cfg.soft_storage_gb,cfg.hard_storage_gb)}
-                    print(json.dumps(payload,indent=2))
                 elif args.action=='list':
                     print(json.dumps([dict(r) for r in store.db.execute('SELECT * FROM holdings WHERE active=1')],indent=2))
                 elif args.action=='add':
@@ -116,7 +133,7 @@ def main(argv=None):
             finally:
                 store.close()
         return 0
-    except (ValueError,RuntimeError,OSError) as exc:
+    except (ValueError,RuntimeError,OSError,sqlite3.Error) as exc:
         print(f'STOX-AI: {exc}',file=sys.stderr)
         return 1
 
