@@ -33,3 +33,4 @@ cache/
 .coverage
 htmlcov/
 .mypy_cache/
+.stox-local/

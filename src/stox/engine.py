@@ -18,6 +18,7 @@ from .predictions import settle,issue,performance
 from .holdings import review
 from .reporting import evidence,write_reports
 from .progress import Progress
+from .paths import runtime_environment
 
 
 def git_commit():
@@ -28,6 +29,11 @@ def git_commit():
         return 'unknown (installed distribution)'
 
 def run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
+    with runtime_environment(cfg.root):
+        return _run(cfg,offline,force_train,timestamp,synthetic)
+
+
+def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
     cfg.initialize()
     store=Store(cfg.root)
     cal=MarketCalendar()

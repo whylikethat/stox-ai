@@ -3,6 +3,7 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from .paths import default_config
 
 SECRET_NAMES = ('ALPACA_API_KEY', 'ALPACA_API_SECRET', 'FRED_API_KEY', 'ALPHAVANTAGE_API_KEY', 'SEC_USER_AGENT')
 
@@ -38,11 +39,12 @@ class Config:
 
     @classmethod
     def load(cls, path: str | None = None, root: str | None = None):
-        config_path = Path(path or os.environ.get('STOX_CONFIG', 'config.toml')).expanduser().resolve()
+        config_path = Path(path or os.environ.get('STOX_CONFIG') or default_config()).expanduser().resolve()
         raw = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
         base = config_path.parent
         values = raw.get('stox', {})
-        location = Path(root or os.environ.get('STOX_HOME') or values.pop('root', '.stox')).expanduser()
+        configured_root = values.pop('root', '.stox')
+        location = Path(root or os.environ.get('STOX_HOME') or configured_root).expanduser()
         if not location.is_absolute():
             location = base / location
         for key in ('horizons', 'symbols', 'macro_series'):

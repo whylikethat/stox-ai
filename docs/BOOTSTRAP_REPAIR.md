@@ -1,4 +1,8 @@
-# Bootstrap recovery, version 2.0.3 / schema 3
+# Bootstrap recovery, version 2.0.4 / schema 3
+
+The batching/resume repair below was introduced in 2.0.3. Version 2.0.4 adds
+[repository-local installation and temporary storage](LOCAL_STORAGE.md), without
+another database schema migration. Follow that guide if setup failed with an I/O error.
 
 Existing `.stox` is valuable runtime state. Keep it, including its SQLite database,
 WAL/SHM sidecars, warehouse, checkpoints, models and reports. No reset, destructive

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.4 — 2026-10-07
+
+- Keep pip downloads, build/rollback temporary files and installer caches under ignored `.stox-local/`; install dependencies into the repository `.venv`. Disable inherited pip user/target/prefix settings that could redirect installation.
+- Reuse an existing Python 3.11–3.13 venv instead of recreating it with a newer system interpreter. Check installed/source versions and dependency consistency before declaring setup complete.
+- Resolve the default config beside the source checkout from any launch directory. Preserve explicit config/root overrides and fix their precedence when the TOML also specifies a root.
+- Route Python, SQLite and joblib temporary files and XDG caches under the selected runtime root; restore environment settings for embedded callers. Add read-only `stox paths` and setup write/fsync/rename/read preflight checks.
+- Preserve the schema-3 bootstrap repair and existing runtime state. No change can repair a device reporting unrecovered medium read errors.
+
 ## 2.0.3 — 2026-10-07
 
 - Batch event/identifier writes in caller-owned FULL-durability transactions; add atomic page/cursor receipts and bounded date-window resume for actions/news.

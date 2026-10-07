@@ -1,5 +1,27 @@
 # Acceptance record
 
+## 2.0.4 installation and local paths — 2026-10-07
+
+- Full offline suite: **115 passed in 72.49 seconds**, including the existing full
+  bootstrap interruption/resume/models/reports integration tests.
+- Twelve location/setup tests cover launch from another directory, explicit root
+  precedence, no writes to a simulated internal home, inherited pip redirects,
+  existing database/WAL/config/secret preservation, unsupported/broken environments,
+  scratch symlinks and injected I/O failures. Setup refuses a system interpreter
+  masquerading as `.venv` before invoking pip.
+- Actual editable installation and upgrade from **2.0.2 to 2.0.4** succeeded in an
+  isolated venv in a checkout whose path contains spaces and Chinese characters.
+  Build/rollback scratch stayed in the checkout; the simulated internal home stayed
+  empty; an existing state-file fixture retained identical bytes. Version and path
+  checks passed when invoked from outside the checkout.
+- A complete fresh locked dependency download was blocked by the runner's network
+  restrictions. The real editable-install check used local copies of already
+  available build tools, with network disabled. Dependency installation orchestration
+  and failure handling are covered by offline tests; live installation on Kali/NTFS
+  and the user's drive remain unverified.
+- Shell syntax, Python compilation and diff checks passed. The small setup I/O probe
+  does not certify disk health; unrecovered medium errors require storage recovery.
+
 This record distinguishes implemented offline functionality from unproven live behavior and remaining specification gaps. The repository must not be described as a fully live-validated investment system.
 
 | Area | Offline implementation / evidence | Remaining limitation |

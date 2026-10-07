@@ -1,5 +1,7 @@
 # STOX-AI
 
+**2.0.4 local storage:** setup now keeps its downloads/build files inside the repository, reuses a supported existing Python environment, and verifies installation. Runtime temporary files stay under the selected data root. `stox paths` shows all locations without opening the database. See [local installation and recovery](docs/LOCAL_STORAGE.md).
+
 **2.0.3 bootstrap repair:** if you have an existing interrupted bootstrap, follow the [non-destructive upgrade and resume procedure](docs/BOOTSTRAP_REPAIR.md) before restarting. It preserves `.stox`, adds page checkpoints and batches database writes. `stox status` is now a fast read-only command.
 
 Local, on-demand U.S. stock and ordinary-ETF research for **20, 30, 60 and 90 calendar days**, with 30D as the primary horizon. The routine command is `stox run`. No trades, brokerage account access, capital allocation, paid AI API, email, daemon or cloud runtime.
