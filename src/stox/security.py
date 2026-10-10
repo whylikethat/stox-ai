@@ -159,12 +159,16 @@ class SecurityMaster:
             raise ValueError(f'No unique authoritative {kind} mapping')
         return self.resolve(rows[0][0])
 
-    def requests(self,cfg):
+    def requests(self,cfg, discovery=False):
         with self.store.transaction():
             self.db.execute("UPDATE health SET status='INACTIVE' WHERE provider LIKE 'security-request:%'")
-        requested=set(cfg.symbols)|{'SPY','QQQ'}|{r[0] for r in self.db.execute('SELECT symbol FROM holdings WHERE active=1')}
+        requested=set(cfg.symbols)|{'SPY','QQQ'}|{r[0] for r in self.db.execute('SELECT symbol FROM holdings WHERE active=1')}|{r[0] for r in self.db.execute('SELECT symbol FROM watchlist')}
         if not cfg.symbols:
-            requested.update(r[0] for r in self.db.execute('SELECT market_symbol FROM security_master WHERE queryable=1 AND present=1'))
+            selected=self.db.execute("SELECT value FROM runtime_meta WHERE key='modeling_universe'").fetchone()
+            if selected and not discovery:
+                requested.update(json.loads(selected[0])['symbols'])
+            else:
+                requested.update(r[0] for r in self.db.execute('SELECT market_symbol FROM security_master WHERE queryable=1 AND present=1'))
         result=[]
         for ticker in sorted(requested):
             try: result.append(self.resolve(ticker))
@@ -283,3 +287,4 @@ class SecurityMaster:
             with self.store.transaction():
                 self.db.execute('UPDATE holdings SET security_id=?,resolution_status=?,input_kind=? WHERE id=?',
                                 (aid,status,identifier_kind(h['symbol']) or 'ticker',h['id']))
+

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+import math
 
 DISALLOWED = re.compile(r'\b(warrant|warrants|rights|units?|preferred|depositary|depositary shares|adr|ads|etn|leveraged|inverse|ultra|ultrapro|ultrashort|short|bear|bull|2x|3x|4x|5x|1\.5x)\b',re.I)
 
@@ -26,13 +27,16 @@ def eligible(asset, row, cfg):
         reasons.append('security master has not verified a queryable tradable ticker')
     if asset.get('status') != 'active':
         reasons.append('inactive security')
-    if row['close'] < cfg.min_price:
+    if asset.get('security_type')=='common' and asset.get('market_cap') is not None and float(asset['market_cap'])<300_000_000:
+        reasons.append('reported micro-cap')
+    if not math.isfinite(row['close']) or row['close'] < cfg.min_price:
         reasons.append('price below minimum')
     threshold = max(cfg.min_dollar_volume,cfg.liquidity_reference_usd/cfg.max_participation)
-    if row.get('dollar_volume',0) < threshold:
+    if not math.isfinite(row.get('dollar_volume',0)) or row.get('dollar_volume',0) < threshold:
         reasons.append('insufficient median dollar liquidity')
     if row.get('history_count',0) < cfg.min_history:
         reasons.append('insufficient history')
     if row.get('missing_recent',1):
         reasons.append('missing recent regular sessions')
     return reasons
+

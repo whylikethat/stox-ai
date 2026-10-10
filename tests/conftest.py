@@ -13,6 +13,10 @@ def no_network(monkeypatch):
 @pytest.fixture
 def cfg(tmp_path):
     c=Config(tmp_path/'state')
+    # Legacy provider fixtures exercise ingestion itself with two daily bars.
+    # Autonomous screening has dedicated realistic batched fixtures.
+    c.autonomous_universe=False
+    c.history_window_days=31
     c.initialize()
     return c
 
@@ -25,3 +29,4 @@ def store(cfg):
 @pytest.fixture(scope='session')
 def calendar():
     return MarketCalendar()
+

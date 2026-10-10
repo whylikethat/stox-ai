@@ -44,7 +44,7 @@ class Ingestor:
                 master.resolve_holdings()
                 self.store.advance('assets',stamp)
             self.progress.update(processed=len(assets))
-        requests=master.requests(self.cfg)
+        requests=master.requests(self.cfg,discovery=True)
         warnings=[]
         def summarize():
             diagnostics=master.persist_diagnostics(self.cfg,session)
@@ -54,11 +54,26 @@ class Ingestor:
             master.check_failure_budget(self.cfg)
             if not requests:
                 raise RuntimeError('Universe validation failed: no authoritative active tradable tickers; inspect stox universe')
+        if not self.cfg.symbols and self.cfg.autonomous_universe:
+            from .screening import select_universe
+            with self.progress.stage('recent-universe-screen',total=len(requests)):
+                requests=select_universe(self,master,requests,session,end,stamp)
         with self.progress.stage('bars',total=len(requests)):
             try:
                 self.bars(requests,master,session,end,stamp,warnings)
             finally:
                 summarize()
+        # Securities leaving the modeling universe still need prices for open outcomes.
+        pending=self.store.db.execute("SELECT DISTINCT f.symbol FROM forecasts f WHERE (SELECT count(*) FROM outcomes o WHERE o.forecast_id=f.id)<json_array_length(f.payload,'$.forecasts')").fetchall()
+        selected={r.ticker for r in requests}
+        settlement_refs=[]
+        for row in pending:
+            if row[0] in selected: continue
+            try: settlement_refs.append(master.resolve(row[0]))
+            except ValueError: warnings.append(row[0]+': open forecast cannot settle while security is non-queryable')
+        if settlement_refs:
+            with self.progress.stage('open-forecast-prices',total=len(settlement_refs)):
+                self.bars(settlement_refs,master,session,end,stamp,warnings)
         with self.progress.stage('legacy-action-index'):
             reuse_legacy_actions(self.store,master,self.progress)
         symbols=[r.ticker for r in master.requests(self.cfg)]
@@ -85,13 +100,16 @@ class Ingestor:
             checkpoint=self.store.checkpoint(scope)
             master.bind_history(reference,stamp)
             covered_start=self.store.checkpoint(scope+':history_start')
+            if summary and not covered_start and checkpoint:
+                # Older healthy warehouses may predate history coverage receipts.
+                covered_start=summary['first_session']
             if summary and covered_start and self.cfg.history_start<covered_start:
-                # Extend only the missing prefix, with a durable <=31-day window receipt.
+                # Extend only the missing prefix, with a durable bounded window receipt.
                 prefix=scope+':prefix:'+self.cfg.history_start
                 begin=self.store.checkpoint(prefix) or self.cfg.history_start
                 while begin<covered_start:
                     self.store.storage_check(self.cfg.soft_storage_gb,self.cfg.hard_storage_gb)
-                    stop=min(pd.Timestamp(begin)+pd.Timedelta(days=30),pd.Timestamp(covered_start)-pd.Timedelta(days=1)).date().isoformat()
+                    stop=min(pd.Timestamp(begin)+pd.Timedelta(days=self.cfg.history_window_days-1),pd.Timestamp(covered_start)-pd.Timedelta(days=1)).date().isoformat()
                     for page in self.alpaca.bars([reference],begin,stop+'T23:59:59Z'):
                         if any(k!=symbol for k in page):
                             raise ProviderError('Alpaca bars returned an unexpected symbol; response not merged')
@@ -191,11 +209,16 @@ class Ingestor:
             self.progress.update(skipped=1,note='completed snapshot reused')
             return
         coverage_start=(self.store.checkpoint(scope+':history_start') if expand_history and pending and pending['status']=='running' else self.cfg.history_start)
-        completed=ingest_feed(self.store,self.alpaca,feed,start(),stamp,consume,self.progress,scope=scope,symbols=references,history_start=coverage_start if feed=='actions' else None)
+        completed=ingest_feed(self.store,self.alpaca,feed,start(),stamp,consume,self.progress,scope=scope,symbols=references,history_start=coverage_start if feed=='actions' else None,max_pages=self.cfg.news_pages_per_run if feed=='news' else None)
+        if completed is None:
+            return
         if expand_history and pending and pending['status']=='running' and pending['start']>self.cfg.history_start:
             completed=ingest_feed(self.store,self.alpaca,feed,self.cfg.history_start,stamp,consume,self.progress,scope=scope,symbols=references,history_start=self.cfg.history_start if feed=='actions' else None)
         # A multi-day interrupted job must finish its frozen request before catching up to now.
         if completed[:10]<stamp[:10]:
+            if feed=='news':
+                self.store.health('news','WARN','Frozen news snapshot completed; next run catches up within its page budget')
+                return
             completed=ingest_feed(self.store,self.alpaca,feed,start(),stamp,consume,self.progress,scope=scope,symbols=references,history_start=self.cfg.history_start if feed=='actions' else None)
 
     def disabled(self, provider, warnings):
@@ -216,6 +239,8 @@ class Ingestor:
                     sec_target=self.store.checkpoint('sec:target') or stamp
                     self.store.advance('sec:target',sec_target)
                     master=SecurityMaster(self.store)
+                    # Least recently refreshed first; bounded work on every invocation.
+                    symbols=sorted(symbols,key=lambda s:(self.store.checkpoint('sec:'+str(mapping.get(s,''))) or '',s))[:self.cfg.sec_symbols_per_run]
                     for index,symbol in enumerate(symbols):
                         if symbol not in mapping: continue
                         cik = mapping[symbol]
@@ -293,3 +318,4 @@ class Ingestor:
             else:
                 warnings.append('Optional earnings calendar unavailable: Alpha Vantage is not configured')
                 self.store.health('alpha','WARN','Not configured; upcoming earnings dates may be unknown')
+

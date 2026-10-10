@@ -35,6 +35,7 @@ def seed(cfg, end='2025-12-19', start=None):
         store.record('assets',asset['id'],asset,cal.open(sessions[0]).isoformat())
         assets.append(asset)
         store.advance('bars:'+symbol,sessions[-1])
+        store.advance('bars:'+symbol+':history_start',start or '2014-01-02')
     for key in ('actions','news','sec','fred'):
         store.advance(key,stamp.isoformat())
     from .security import SecurityMaster
@@ -43,3 +44,4 @@ def seed(cfg, end='2025-12-19', start=None):
         add(store,symbols[-1],sessions[-50],float(store.bars(symbols[-1]).iloc[-50].close),10)
     store.close()
     return stamp.isoformat()
+

@@ -36,3 +36,14 @@ threads = 2
 # A nonempty list restricts research coverage, plus SPY, QQQ and held symbols.
 symbols = []
 macro_series = ["DGS10", "DGS2", "UNRATE", "CPIAUCSL", "BAMLC0A0CM"]
+
+# Autonomous two-stage screen; mandatory benchmarks/holdings/watchlist may exceed the cap.
+autonomous_universe = true
+universe_size = 1000
+screen_lookback_days = 90
+screen_batch_size = 100
+screen_min_sessions = 20
+history_window_days = 365
+news_pages_per_run = 100
+sec_symbols_per_run = 20
+report_retention_runs = 30

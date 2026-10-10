@@ -136,6 +136,8 @@ class ForecastModel:
             self.quantiles[q]=model
         self.train_through=str(train.label_end.max())
         self.calibration_through=str(calibration.label_end.max())
+        self.date_ranges={'train':[str(train.session.min()),str(train.session.max())],
+                          'calibration':[str(calibration.session.min()),str(calibration.session.max())]}
         self.reference=np.nanmedian(X,axis=0)
         self.reference=np.nan_to_num(self.reference)
         return self
@@ -238,11 +240,12 @@ def train_horizon(frame,horizon,cfg):
     valid=evaluation['ece']<=cfg.max_calibration_error and evaluation['brier']<=evaluation['base_brier'] and evaluation['blocks']>=cfg.min_validation_blocks
     champion.metadata={'feature_columns':chosen['columns'],'available_feature_families':[name for name,cols in FAMILIES.items() if development[cols].notna().any().any()],'horizon':horizon,'algorithm':chosen['algorithm'],'family':chosen['family'],
                        'holdout_start':holdout_start,'holdout_end':str(holdout.session.max()),
+                       'date_ranges':{**champion.date_ranges,'holdout':[str(holdout.session.min()),str(holdout.session.max())]},
                        'train_through':champion.train_through,'calibration_through':champion.calibration_through,
                        'experiments':experiments,'evaluation':evaluation,'threshold':threshold,
                        'validated':bool(valid and threshold is not None),'created_at':now_iso(),
                        'label_definition':'next-regular-open/calendar-day-target/first-close/net-total-return-v1',
-                       'training_rows':len(data),'data_digest':digest(data[['symbol','session','target']].to_dict('records'))}
+                       'training_rows':len(data),'history_start':cfg.history_start,'data_digest':digest(data[['symbol','session','target']].to_dict('records'))}
     # An independently selected alternative is retained for disagreement, never arbitrary averaging.
     alternative=next((x for x in experiments if x['algorithm']!=chosen['algorithm'] and x['family']=='price'),None)
     champion.committee=fit_calibrated(development,alternative['algorithm'],alternative['columns'],horizon) if alternative else None
@@ -250,6 +253,22 @@ def train_horizon(frame,horizon,cfg):
         other=champion.committee.predict(holdout)[0][:,3]
         champion.metadata['agreement_p90']=float(np.quantile(np.abs(other-p[:,3]),.9))
     return champion,holdout
+
+
+def validation_diagnostics(metadata,cfg):
+    e=metadata['evaluation']
+    reasons=[]
+    if e['ece']>cfg.max_calibration_error: reasons.append('holdout calibration error exceeds configured maximum')
+    if e['brier']>e['base_brier']: reasons.append('holdout Brier score does not beat the base rate')
+    if e['blocks']<cfg.min_validation_blocks: reasons.append('insufficient independent holdout blocks')
+    if metadata.get('threshold') is None: reasons.append('no development reliability bucket supports a qualification threshold')
+    if not metadata['validated'] and not reasons: reasons.append('legacy model marked unvalidated; retrain for full diagnostics')
+    return {'validated':metadata['validated'],'learned_threshold':metadata.get('threshold'),
+            'holdout_samples':e['n'],'independent_blocks':e['blocks'],
+            'brier':e['brier'],'base_brier':e['base_brier'],'calibration_error':e['ece'],
+            'supported_reliability_buckets':[b for b in e['buckets'] if b['n']>=cfg.min_bucket_samples and b['blocks']>=cfg.min_validation_blocks and b['interval'][0]>.5 and abs(b['probability']-b['win_rate'])<=cfg.max_calibration_error],
+            'date_ranges':metadata.get('date_ranges',{'train':['unknown (legacy)',metadata.get('train_through')],'calibration':['unknown (legacy)',metadata.get('calibration_through')],'holdout':[metadata.get('holdout_start'),metadata.get('holdout_end')]}),
+            'failure_reasons':reasons}
 
 
 def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
@@ -260,6 +279,9 @@ def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
             if progress: progress.update(processed=index,horizon=horizon,force=True)
             existing=store.db.execute("SELECT * FROM models WHERE horizon=? AND status='champion' ORDER BY created_at DESC LIMIT 1",(horizon,)).fetchone()
             old=joblib.load(store.root/existing['path']) if existing else None
+            if old and (cfg.history_start<old.metadata.get('history_start',cfg.history_start) or (force and 'history_start' not in old.metadata)):
+                # Rebuild legacy/short-history research models once after expansion.
+                old=None
             if old and not labels.empty and any(c not in labels or not labels[c].notna().any() for c in old.columns if c not in FAMILIES['price']):
                 # Never reuse an enrichment-dependent champion after its inputs are disabled.
                 old=None
@@ -310,3 +332,4 @@ def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
             store.health(f'model:{horizon}','PASS' if results[horizon].metadata['validated'] else 'WARN','Validated champion' if results[horizon].metadata['validated'] else 'Research model; recommendation qualification has not passed')
     if progress: progress.update(processed=len(cfg.horizons))
     return results
+

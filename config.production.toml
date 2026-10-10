@@ -1,0 +1,50 @@
+# Core Alpaca production profile. Enable bounded enrichment only when configured.
+[stox]
+# Relative to this config file, independent of external-drive mount paths.
+root = ".stox"
+horizons = [20, 30, 60, 90]
+history_start = "2016-01-01"
+# News has an independent rolling horizon, even with full price history.
+enable_news = false
+news_lookback_days = 90
+enable_sec = false
+enable_fred = false
+enable_alpha_vantage = false
+friction_bps = 20.0
+min_price = 5.0
+min_dollar_volume = 20000000.0
+min_history = 252
+min_core_coverage = 0.90
+# Abort if at least two intended assets fail identity validation and exceed 5%.
+max_identifier_failure_fraction = 0.05
+min_identifier_failures = 2
+liquidity_reference_usd = 100000.0
+max_participation = 0.005
+soft_storage_gb = 100.0
+hard_storage_gb = 150.0
+av_daily_budget = 20
+# Brief repeated invocations reuse covered event snapshots; later polls use correction overlaps.
+event_refresh_minutes = 15
+retrain_days = 30
+min_new_labels = 500
+max_training_rows = 250000
+min_validation_blocks = 8
+min_bucket_samples = 100
+max_calibration_error = 0.10
+max_tail_probability = 0.10
+threads = 2
+# Empty means autonomous scanning of conservatively classified assets.
+# A nonempty list restricts research coverage, plus SPY, QQQ and held symbols.
+symbols = []
+macro_series = ["DGS10", "DGS2", "UNRATE", "CPIAUCSL", "BAMLC0A0CM"]
+
+# Autonomous two-stage screen; mandatory benchmarks/holdings/watchlist may exceed the cap.
+autonomous_universe = true
+universe_size = 1000
+screen_lookback_days = 90
+screen_batch_size = 100
+screen_min_sessions = 20
+history_window_days = 365
+news_pages_per_run = 100
+sec_symbols_per_run = 20
+report_retention_runs = 30

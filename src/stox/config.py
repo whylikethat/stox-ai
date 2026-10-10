@@ -39,6 +39,15 @@ class Config:
     max_tail_probability: float = .10
     threads: int = 2
     symbols: tuple[str, ...] = ()
+    universe_size: int = 1000
+    autonomous_universe: bool = True
+    screen_lookback_days: int = 90
+    screen_batch_size: int = 100
+    screen_min_sessions: int = 20
+    sec_symbols_per_run: int = 20
+    report_retention_runs: int = 30
+    news_pages_per_run: int = 100
+    history_window_days: int = 365
     macro_series: tuple[str, ...] = ('DGS10', 'DGS2', 'UNRATE', 'CPIAUCSL', 'BAMLC0A0CM')
     secrets: dict[str, str] = field(default_factory=dict, repr=False)
 
@@ -56,11 +65,15 @@ class Config:
             if key in values:
                 values[key] = tuple(values[key])
         cfg = cls(root=location.resolve(), **values)
-        for key in ('enable_news', 'enable_sec', 'enable_fred', 'enable_alpha_vantage'):
+        for key in ('enable_news', 'enable_sec', 'enable_fred', 'enable_alpha_vantage','autonomous_universe'):
             if type(getattr(cfg,key)) is not bool:
                 raise ValueError(f'{key} must be a boolean')
         if type(cfg.news_lookback_days) is not int or cfg.news_lookback_days < 1:
             raise ValueError('news_lookback_days must be a positive integer')
+        if not 1 <= cfg.universe_size <= 1500 or not 1 <= cfg.screen_batch_size <= 100:
+            raise ValueError('universe_size must be 1–1500; screen_batch_size must be 1–100')
+        if not 1 <= cfg.history_window_days <= 365 or cfg.news_pages_per_run < 1 or cfg.screen_lookback_days < 30 or cfg.screen_min_sessions < 1 or cfg.sec_symbols_per_run < 0 or cfg.report_retention_runs < 1:
+            raise ValueError('Invalid screening, enrichment or retention bounds')
         if 30 not in cfg.horizons or any(h <= 0 for h in cfg.horizons) or len(set(cfg.horizons)) != len(cfg.horizons):
             raise ValueError('Horizons must be unique positive calendar-day values including 30.')
         if not 0 <= cfg.event_refresh_minutes <= 1440:
@@ -86,3 +99,4 @@ class Config:
 
     def public(self):
         return {k: str(v) if isinstance(v, Path) else v for k, v in vars(self).items() if k != 'secrets'}
+

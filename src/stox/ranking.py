@@ -5,6 +5,18 @@ from .universe import eligible
 
 SOFT_TARGETS={20:.015,30:.02,60:.04,90:.06}
 
+def consistency(p_gain, expected, quantiles):
+    """Flag cross-model contradictions without changing calibrated estimates."""
+    q10,median,q90=quantiles
+    reasons=[]
+    if (p_gain>.55 and median<0) or (p_gain<.45 and median>0):
+        reasons.append('gain probability and median imply opposing directions')
+    if (p_gain>.60 and q90<=0) or (p_gain<.40 and q10>=0):
+        reasons.append('gain probability conflicts with return interval')
+    if p_gain>.60 and expected<=0:
+        reasons.append('high gain probability but non-positive expected net return')
+    return ('conflicting' if reasons else 'no detected conflict'),reasons
+
 def forecast_rows(features, assets, models, cfg, expected_session):
     latest=features.sort_values('session').groupby('symbol').tail(1)
     lookup={a['symbol']:a for a in assets}
@@ -41,6 +53,10 @@ def forecast_rows(features, assets, models, cfg, expected_session):
                 disagreement=abs(p[i,3]-committee[i])
                 rule=max(.01,model.metadata.get('agreement_p90',.05))
                 agreement='high' if disagreement<=rule/2 else 'moderate' if disagreement<=rule else 'low'
+                consistency_status,consistency_reasons=consistency(float(p[i,3]),float(expected[i]),q[i])
+                reasons.extend('forecast inconsistency: '+r for r in consistency_reasons)
+                if agreement=='low':
+                    reasons.append('low model agreement')
                 result={'symbol':row['symbol'],'name':lookup.get(row['symbol'],{}).get('name',row['symbol']),
                         'horizon':int(h),'p_gain':float(p[i,3]),'p_above_2':float(p[i,4]),'p_above_5':float(p[i,5]),
                         'expected_return':float(expected[i]),'median_return':float(q[i,1]),
@@ -49,9 +65,10 @@ def forecast_rows(features, assets, models, cfg, expected_session):
                         'interval_validation_coverage':evaluation['interval_80_coverage'],
                         'distribution_status':'empirical holdout coverage; not a guaranteed interval',
                         'model_agreement':agreement,'model_probabilities':{model.algorithm:float(p[i,3]),'alternative':float(committee[i])},
+                        'consistency_status':consistency_status,'consistency_reasons':consistency_reasons,
                         'calibration_support':bucket,'qualified':not reasons,'exclusions':reasons,
                         'probability_resolution':max(.01,(bucket['interval'][1]-bucket['interval'][0])/2) if bucket else 1.,
-                        'quality_label':'Meets preferred return' if expected[i]>=SOFT_TARGETS.get(h,0) else 'High Confidence / Lower Return',
+                        'quality_label':'Validated opportunity' if not reasons else 'Research only',
                         'close':float(row['close']),'dollar_volume':float(row['dollar_volume']) if np.isfinite(row['dollar_volume']) else None,
                         'volatility':float(row['volatility']) if np.isfinite(row['volatility']) else None,'drawdown':float(row['drawdown']) if np.isfinite(row['drawdown']) else None,
                         'session':row['session'],'model_id':model.model_id,'feature_version':'causal-v2',
@@ -62,6 +79,10 @@ def forecast_rows(features, assets, models, cfg, expected_session):
     return output
 
 def rank(rows):
+    # Contradictory outputs remain visible, after internally consistent forecasts.
+    if any(r.get('consistency_status')=='conflicting' for r in rows) and any(r.get('consistency_status')!='conflicting' for r in rows):
+        ordered=rank([r for r in rows if r.get('consistency_status')!='conflicting'])+rank([r for r in rows if r.get('consistency_status')=='conflicting'])
+        return [{**r,'rank':i+1} for i,r in enumerate(ordered)]
     ordered=sorted(rows,key=lambda r:(-r['p_gain'],r['symbol'],r['horizon']))
     groups=[]
     while ordered:
@@ -75,5 +96,5 @@ def rank(rows):
     return [{**r,'rank':i+1} for i,r in enumerate(groups)]
 
 def leaderboards(rows):
-    valid=[r for r in rows if r['qualified']]
-    return rank([r for r in valid if r['horizon']==30])[:20],rank(valid)[:20]
+    return rank([r for r in rows if r['horizon']==30])[:20],rank(rows)[:20]
+

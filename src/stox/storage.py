@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pandas as pd
 
-SCHEMA = 3
+SCHEMA = 4
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -67,12 +67,17 @@ class Store:
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, started_at TEXT, finished_at TEXT, status TEXT, metadata TEXT);
         CREATE TABLE IF NOT EXISTS models(id TEXT PRIMARY KEY, horizon INTEGER, created_at TEXT, status TEXT, path TEXT, metadata TEXT);
         CREATE TABLE IF NOT EXISTS forecasts(id TEXT PRIMARY KEY, issued_at TEXT, symbol TEXT, entry_session TEXT, payload TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS forecasts_symbol_time ON forecasts(symbol,issued_at DESC);
         CREATE TABLE IF NOT EXISTS entries(forecast_id TEXT PRIMARY KEY REFERENCES forecasts(id), price REAL CHECK(price>0), recorded_at TEXT, source TEXT);
         CREATE TABLE IF NOT EXISTS outcomes(forecast_id TEXT REFERENCES forecasts(id), horizon INTEGER, session TEXT, net_return REAL, payload TEXT, PRIMARY KEY(forecast_id,horizon));
         CREATE TABLE IF NOT EXISTS holdings(id INTEGER PRIMARY KEY, symbol TEXT, purchased TEXT, price REAL CHECK(price>0), shares REAL CHECK(shares>0), forecast_id TEXT, active INTEGER DEFAULT 1);
         CREATE TABLE IF NOT EXISTS holding_reviews(run_id TEXT, holding_id INTEGER, payload TEXT, PRIMARY KEY(run_id,holding_id));
         CREATE TABLE IF NOT EXISTS budgets(provider TEXT, day TEXT, calls INTEGER, PRIMARY KEY(provider,day));
         CREATE TABLE IF NOT EXISTS evaluations(model_id TEXT, kind TEXT, payload TEXT);
+        CREATE TABLE IF NOT EXISTS forecast_snapshots(signature TEXT PRIMARY KEY, created_at TEXT NOT NULL, metadata TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS forecast_snapshot_members(signature TEXT REFERENCES forecast_snapshots(signature), symbol TEXT, forecast_id TEXT REFERENCES forecasts(id), PRIMARY KEY(signature,symbol));
+        CREATE TABLE IF NOT EXISTS universe_screen(symbol TEXT PRIMARY KEY, asset_id TEXT NOT NULL, session TEXT NOT NULL, payload TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS watchlist(symbol TEXT PRIMARY KEY, added_at TEXT NOT NULL);
 
         '''
         for statement in statements.split(';'):
@@ -256,3 +261,4 @@ class Store:
 
     def close(self):
         self.db.close()
+

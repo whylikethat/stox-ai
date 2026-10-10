@@ -1,3 +1,12 @@
+## 2.1.0
+
+- Separate research rankings, strict qualification and prospective cohorts.
+- Persist all live research snapshots with atomic durable deduplication.
+- Add conservative cross-model consistency flags, full validation diagnostics and all-format research reports.
+- Add batched recent-market screening, bounded selected-universe history expansion, user-managed watchlist and open-forecast price refresh.
+- Add schema 4 non-destructive metadata tables, bounded enrichment and generated-report retention.
+- Preserve namespace protections, corporate-action transaction batching and temporal model validation.
+
 # Changelog
 
 ## 2.0.5
@@ -50,3 +59,4 @@
 - Added immutable forecast history, next-open paper entries, per-horizon total-return outcomes and manual holdings reviews.
 - Added terminal/HTML/JSON/Markdown/AI-review reports, operator commands, secret-safe setup, storage gates and offline tests.
 - Documented unavailable live validation and remaining corporate-action, historical-universe, event and scale limitations.
+

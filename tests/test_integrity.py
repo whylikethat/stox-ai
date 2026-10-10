@@ -137,7 +137,7 @@ def test_pending_entry_before_next_open(store,calendar):
 
 def test_only_qualified_horizons_enter_primary_metrics(store,calendar):
     rows=[{'symbol':'X','horizon':30,'qualified':False,'p_gain':.8}]
-    assert issue(store,calendar,rows,'2025-01-04T15:00:00Z',{'event_cutoff':'2025-01-04T15:00:00Z'})==[]
+    assert issue(store,calendar,rows,'2025-01-04T15:00:00Z',{'event_cutoff':'2025-01-04T15:00:00Z'})
     assert performance(store)['horizons']=={}
 
 
@@ -162,3 +162,4 @@ def test_corporate_action_does_not_change_earlier_features(cfg,calendar):
     second=market_features(bars,[action],calendar)
     pd.testing.assert_frame_equal(first[first.session<'2016-12-01'],second[second.session<'2016-12-01'])
     s.close()
+

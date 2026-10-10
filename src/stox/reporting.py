@@ -24,18 +24,41 @@ def percent(value):
     return 'unavailable' if value is None else f'{value:.1%}'
 
 def table(rows):
-    lines=['| Rank | Symbol | Horizon | P(gain) | Expected net return | P(loss >10%) | Status |',
-           '|---:|---|---:|---:|---:|---:|---|']
+    lines=['| Rank | Symbol | Horizon | P(gain) | Expected net | Median | Loss >5% / >10% / >20% | Agreement | Consistency | Qualification |',
+           '|---:|---|---:|---:|---:|---:|---|---|---|---|']
     for r in rows:
-        lines.append(f'| {r.get("rank", "—")} | {r["symbol"]} | {r["horizon"]}D | {percent(r["p_gain"])} | {percent(r["expected_return"])} | {percent(r["p_loss_10"])} | {r["quality_label"]} |')
-    return '\n'.join(lines) if rows else '**No sufficiently strong opportunity this run.**'
+        values=[r.get('rank','—'),r['symbol'],str(r['horizon'])+'D',percent(r['p_gain']),percent(r['expected_return']),percent(r.get('median_return')),
+                ' / '.join(percent(r.get('p_loss_'+str(t))) for t in (5,10,20)),r.get('model_agreement','unknown'),r.get('consistency_status','unknown'),
+                'VALIDATED' if r['qualified'] else 'RESEARCH']
+        lines.append('| '+' | '.join(str(v).replace('|','/') for v in values)+' |')
+    return '\n'.join(lines) if rows else '**No validated opportunities. Research forecasts remain visible above.**'
 
-def evidence(store,symbol,cutoff,cfg=None):
-    news=[r for r in (store.records('news',cutoff) if cfg is None or cfg.enable_news else []) if symbol in r.get('symbols',[])][-10:]
-    filings=[r for r in (store.records('filings',cutoff) if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol][-6:]
-    facts=[r for r in (store.records('facts',cutoff) if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol and r.get('concept') in ('Assets','Liabilities','NetIncomeLoss','Revenues','OperatingIncomeLoss')][-12:]
-    earnings=[r for r in (store.records('earnings',cutoff) if cfg is None or cfg.enable_alpha_vantage else []) if r.get('symbol')==symbol]
-    actions=relevant(store.records('actions',cutoff),symbol)[-10:]
+
+def terminal(report):
+    lines=[f"Completed. {len(report['research_candidates'])} research forecasts; {len(report.get('qualified_across_horizons',[]))} validated opportunities in Top 20; {report.get('new_forecast_count',0)} new symbol snapshots."]
+    for title,rows in [('TOP 3 — 30D RESEARCH',report['primary_30d'][:3]),('TOP 20 — 30D RESEARCH',report['primary_30d']),('TOP 20 — ACROSS HORIZONS',report['across_horizons'])]:
+        lines.append('\n'+title)
+        for r in rows:
+            lines.append(f"#{r['rank']} {r['symbol']} {r['horizon']}D P(gain)={r['p_gain']:.1%} expected net={r['expected_return']:+.2%} median={r['median_return']:+.2%} loss>5/10/20%="+'/'.join(percent(r['p_loss_'+str(t)]) for t in (5,10,20))+f" agreement={r['model_agreement']} consistency={r.get('consistency_status','unknown')} [{'VALIDATED' if r['qualified'] else 'RESEARCH'}]")
+            lines.append('  '+('; '.join(r['exclusions']) or 'All strict qualification gates passed'))
+            lines.append(f"  session={r['session']} close=${r['close']:.2f} median dollar volume={r.get('dollar_volume')} — {r['event_warning']}")
+            context=r.get('catalyst_context',{})
+            lines.append('  Available catalysts: '+json.dumps({k:context.get(k,[]) for k in ('earnings','news','filings')},ensure_ascii=True))
+    for horizon,rows in report.get('by_horizon',{}).items():
+        lines.append('\n'+horizon+'D RESEARCH — TOP 20\n'+table(rows[:20]))
+    lines.append('\nSTRICT VALIDATED OPPORTUNITIES: '+(', '.join(r['symbol']+' '+str(r['horizon'])+'D' for r in report.get('qualified_across_horizons',[])) or 'none'))
+    lines.append('\nPER-HORIZON VALIDATION\n'+json.dumps(report.get('validation',{}),indent=2))
+    lines.extend('NOTICE: '+w for w in report['warnings'])
+    return '\n'.join(lines)
+
+def evidence(store,symbol,cutoff,cfg=None, snapshots=None):
+    def records(kind):
+        return snapshots[kind] if snapshots is not None else store.records(kind,cutoff)
+    news=[r for r in (records('news') if cfg is None or cfg.enable_news else []) if symbol in r.get('symbols',[])][-10:]
+    filings=[r for r in (records('filings') if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol][-6:]
+    facts=[r for r in (records('facts') if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol and r.get('concept') in ('Assets','Liabilities','NetIncomeLoss','Revenues','OperatingIncomeLoss')][-12:]
+    earnings=[r for r in (records('earnings') if cfg is None or cfg.enable_alpha_vantage else []) if r.get('symbol')==symbol]
+    actions=relevant(records('actions'),symbol)[-10:]
     return {'news':news,'filings':filings,'fundamental_evidence':facts,'earnings':earnings,'corporate_actions':actions,
             'known_gaps':['Unverified future earnings dates must be treated as unknown','Historical security type/universe metadata is incomplete','Free provider corporate-action announcements may be late']}
 
@@ -47,10 +70,12 @@ def markdown(report,review=False):
     if report['warnings']:
         sections.append('## Limitations / degraded sources\n\n'+'\n'.join('- '+w for w in report['warnings']))
     primary=report['primary_30d']
-    sections.append('## PRIMARY OPPORTUNITY\n\n'+(f'**#1 {primary[0]["symbol"]} — 30D**' if primary else 'No sufficiently strong opportunity this run.'))
-    sections.append('## Primary 30D leaderboard\n\n'+table(primary))
+    sections.append('## PRIMARY RESEARCH FORECAST\n\n'+(f'**#1 {primary[0]["symbol"]} — 30D**' if primary else 'No sufficiently strong opportunity this run.'))
+    sections.append('## Top 20 — 30D research\n\n'+table(primary))
     sections.append('## Best Across All Horizons\n\n'+table(report['across_horizons']))
-    sections.append('## Top 3 / high-conviction summaries\n\n'+table(primary[:3]))
+    sections.append('## Top 3 research highlights\n\n'+table(primary[:3]))
+    for horizon,rows in report.get('by_horizon',{}).items():
+        sections.append('## '+horizon+'D research — Top 20\n\n'+table(rows[:20]))
     detailed_symbols={r['symbol'] for r in report['primary_30d'][:3]+report['across_horizons'][:3]}|{h['symbol'] for h in report['holdings'] if h['status']!='HEALTHY'}
     for detail in report['details']:
         if review and detail['symbol'] not in detailed_symbols:
@@ -58,6 +83,9 @@ def markdown(report,review=False):
         sections.append('## Candidate '+detail['symbol']+'\n\n'+table(detail['forecasts'])+'\n\n```json\n'+json.dumps(detail,indent=2)+'\n```')
     if report['holdings']:
         sections.append('## Holdings review\n\n```json\n'+json.dumps(report['holdings'],indent=2)+'\n```')
+    sections.append('## Strict validated opportunities\n\n'+table(report.get('qualified_across_horizons',[])))
+    sections.append('## Per-horizon validation diagnostics\n\n```json\n'+json.dumps(report.get('validation',{}),indent=2)+'\n```')
+    sections.append('## All research predictions\n\n```json\n'+json.dumps(report.get('research_candidates',[]),indent=2)+'\n```')
     sections.append('## Prospective performance\n\n```json\n'+json.dumps(report['prospective'],indent=2)+'\n```')
     sections.append('## Backtest evidence — separate from prospective history\n\n```json\n'+json.dumps(report['backtests'],indent=2)+'\n```')
     sections.append('Probabilities are estimates. Feature contributions describe model associations, not proven economic causes. All returns are USD net total returns under disclosed friction assumptions. This application neither executes trades nor allocates capital.')
@@ -67,13 +95,14 @@ def html_report(report,md):
     def leaderboard(rows):
         if not rows:
             return '<p class="empty">No sufficiently strong opportunity this run.</p>'
-        headers='<tr><th>Rank</th><th>Security</th><th>Horizon</th><th>P(gain)</th><th>Expected net</th><th>Loss &gt;10%</th><th>Agreement</th></tr>'
-        body=''.join('<tr>'+''.join('<td>'+html.escape(str(v))+'</td>' for v in [r['rank'],r['symbol'],str(r['horizon'])+'D',percent(r['p_gain']),percent(r['expected_return']),percent(r['p_loss_10']),r['model_agreement']])+'</tr>' for r in rows)
+        headers='<tr><th>Rank</th><th>Security</th><th>Horizon</th><th>P(gain)</th><th>Expected net</th><th>Loss &gt;10%</th><th>Median</th><th>Agreement</th><th>Consistency</th><th>Status</th></tr>'
+        body=''.join('<tr>'+''.join('<td>'+html.escape(str(v))+'</td>' for v in [r['rank'],r['symbol'],str(r['horizon'])+'D',percent(r['p_gain']),percent(r['expected_return']),percent(r['p_loss_10']),percent(r.get('median_return')),r['model_agreement'],r.get('consistency_status','unknown'),'VALIDATED' if r['qualified'] else 'RESEARCH'] )+'</tr>' for r in rows)
         return '<div class="scroll"><table>'+headers+body+'</table></div>'
+    horizon_tables=''.join('<h2>'+html.escape(h)+'D research — Top 20</h2>'+leaderboard(rows[:20]) for h,rows in report.get('by_horizon',{}).items())
     warnings=''.join('<li>'+html.escape(w)+'</li>' for w in report['warnings'])
     candidates=''.join('<details><summary>'+html.escape(d['symbol'])+' · forecasts and evidence</summary><pre>'+html.escape(json.dumps(d,indent=2))+'</pre></details>' for d in report['details'])
     return '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><title>STOX-AI · Investment Research</title><style>
-    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101923;color:#eaf0f5;font:16px/1.6 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:40px 24px}header{border-bottom:1px solid #344251;padding-bottom:24px}h1{font-size:42px;margin:4px 0}h2{margin-top:36px;font-size:23px}.eyebrow{color:#78d9c2;letter-spacing:3px;font-size:12px}section,details{background:#182532;border:1px solid #344251;border-radius:12px;padding:20px;margin-top:18px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #344251;white-space:nowrap}th{color:#b2c0ce;font-size:12px;text-transform:uppercase}.scroll{overflow:auto}.empty{color:#eed399}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#c5d3e0}.warning{border-color:#887349}summary{cursor:pointer;font-weight:600}footer{margin-top:32px;color:#acbac7;font-size:13px}</style><main><header><div class="eyebrow">STOX-AI / LOCAL INVESTMENT RESEARCH</div><h1>Evidence before conviction.</h1><p>20D · 30D primary · 60D · 90D — calendar-day horizons</p></header>'''+ ('<section class="warning"><b>SYNTHETIC DEMONSTRATION</b><p>Not investment evidence.</p></section>' if report.get('synthetic') else '') + '<section><pre>'+html.escape(json.dumps(report['metadata'],indent=2))+'</pre></section><section class="warning"><h2>Data and model status</h2><ul>'+warnings+'</ul></section><h2>Primary 30D</h2>'+leaderboard(report['primary_30d'])+'<h2>Best Across All Horizons</h2>'+leaderboard(report['across_horizons'])+'<h2>Candidate evidence</h2>'+candidates+'<details><summary>Holdings</summary><pre>'+html.escape(json.dumps(report['holdings'],indent=2))+'</pre></details><details><summary>Prospective performance</summary><pre>'+html.escape(json.dumps(report['prospective'],indent=2))+'</pre></details><details><summary>Backtest performance</summary><pre>'+html.escape(json.dumps(report['backtests'],indent=2))+'</pre></details><footer>No automatic trading or position sizing. No forecast is a guarantee. Reports evaluate holdings only when the application runs.</footer></main></html>'
+    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101923;color:#eaf0f5;font:16px/1.6 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:40px 24px}header{border-bottom:1px solid #344251;padding-bottom:24px}h1{font-size:42px;margin:4px 0}h2{margin-top:36px;font-size:23px}.eyebrow{color:#78d9c2;letter-spacing:3px;font-size:12px}section,details{background:#182532;border:1px solid #344251;border-radius:12px;padding:20px;margin-top:18px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #344251;white-space:nowrap}th{color:#b2c0ce;font-size:12px;text-transform:uppercase}.scroll{overflow:auto}.empty{color:#eed399}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#c5d3e0}.warning{border-color:#887349}summary{cursor:pointer;font-weight:600}footer{margin-top:32px;color:#acbac7;font-size:13px}</style><main><header><div class="eyebrow">STOX-AI / LOCAL INVESTMENT RESEARCH</div><h1>Evidence before conviction.</h1><p>20D · 30D primary · 60D · 90D — calendar-day horizons</p></header>'''+ ('<section class="warning"><b>SYNTHETIC DEMONSTRATION</b><p>Not investment evidence.</p></section>' if report.get('synthetic') else '') + '<section><pre>'+html.escape(json.dumps(report['metadata'],indent=2))+'</pre></section><section class="warning"><h2>Data and model status</h2><ul>'+warnings+'</ul></section><h2>Primary 30D</h2>'+leaderboard(report['primary_30d'])+'<h2>Best Across All Horizons</h2>'+leaderboard(report['across_horizons'])+horizon_tables+'<h2>Top 3 research highlights</h2>'+leaderboard(report['primary_30d'][:3])+'<h2>Strict validated opportunities</h2>'+leaderboard(report.get('qualified_across_horizons',[]))+'<details><summary>Per-horizon validation diagnostics</summary><pre>'+html.escape(json.dumps(report.get('validation',{}),indent=2))+'</pre></details><details><summary>All research predictions, reasons and context</summary><pre>'+html.escape(json.dumps(report.get('research_candidates',[]),indent=2))+'</pre></details><h2>Candidate evidence</h2>'+candidates+'<details><summary>Holdings</summary><pre>'+html.escape(json.dumps(report['holdings'],indent=2))+'</pre></details><details><summary>Prospective performance</summary><pre>'+html.escape(json.dumps(report['prospective'],indent=2))+'</pre></details><details><summary>Backtest performance</summary><pre>'+html.escape(json.dumps(report['backtests'],indent=2))+'</pre></details><footer>No automatic trading or position sizing. No forecast is a guarantee. Reports evaluate holdings only when the application runs.</footer></main></html>'
 
 def write_reports(root,report):
     directory=Path(root)/'reports'/'runs'/report['run_id']
@@ -95,3 +124,18 @@ def write_reports(root,report):
         tmp.write_text(content,encoding='utf-8')
         os.replace(tmp,dest)
     return directory
+
+
+
+def cleanup_reports(root, keep):
+    """Only generated reports are retained by count; immutable forecasts stay in SQLite."""
+    import shutil
+    directory=Path(root)/'reports'/'runs'
+    completed=sorted((p for p in directory.iterdir() if p.is_dir() and (p/'report.json').is_file()),key=lambda p:p.name,reverse=True)
+    for path in completed[keep:]:
+        if path.is_symlink():
+            continue
+        # Never delete unrecognized files a user may have placed in a report directory.
+        known={'report.json','report.md','report.html','ai_review.md'}
+        if {p.name for p in path.iterdir()} <= known:
+            shutil.rmtree(path)

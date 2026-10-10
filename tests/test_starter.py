@@ -139,7 +139,8 @@ def test_starter_real_training_four_horizons_and_incremental(tmp_path,monkeypatc
     second,_=run(cfg,timestamp=stamp,synthetic=True)
     assert not api.calls
     assert second['metadata']['model_ids']==report['metadata']['model_ids']
-    assert not second['official_forecast_ids']
+    assert second['new_forecast_count']==0
+    assert second['research_forecast_ids']==report['research_forecast_ids']
     db=Store(cfg.root)
     assert counts==tuple(db.db.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in ('models','forecasts','records'))
     db.close()
@@ -261,3 +262,4 @@ def test_price_prefix_interrupt_reuses_completed_windows(cfg,store,calendar):
     assert store.checkpoint('bars:AAPL:prefix:2024-11-01')=='2024-12-02'
     calls.clear();ing.run(STAMP)
     assert calls[0]=='2024-12-02'
+

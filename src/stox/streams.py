@@ -52,7 +52,7 @@ def window_end(start,target):
     return min(date.fromisoformat(start)+timedelta(days=30),date.fromisoformat(target[:10])).isoformat()
 
 
-def ingest_feed(store, api, feed, start, target, consume, progress, scope=None, symbols=None, history_start=None):
+def ingest_feed(store, api, feed, start, target, consume, progress, scope=None, symbols=None, history_start=None, max_pages=None):
     """Returns the fully completed snapshot; unfinished jobs retain original query boundaries.
 
     A page's rows, typed IDs, raw-payload receipt, page receipt and cursor are one FULL
@@ -68,7 +68,11 @@ def ingest_feed(store, api, feed, start, target, consume, progress, scope=None, 
                 (scope,job_key,start,target,start,window_end(start,target),None,'running',now_iso()))
         job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(scope,)).fetchone()
     progress.update(processed=job['processed'],resume_processed=job['processed'],pages=job['pages'],inserted=job['inserted'],skipped=job['skipped'])
+    pages_this_run=0
     while job['status']=='running':
+        if max_pages is not None and pages_this_run>=max_pages:
+            store.health(feed,'WARN','Per-run page budget reached; durable cursor retained for next run')
+            return None
         try:
             rows,next_token=api.event_page(feed,job['window_start'],job['window_end'],job['cursor'],job['target'],**({'symbols':symbols} if symbols else {}))
         except ProviderError as exc:
@@ -108,5 +112,7 @@ def ingest_feed(store, api, feed, start, target, consume, progress, scope=None, 
             progress.update(processed=job['processed']+len(rows),pages=job['pages']+1,
                             inserted=job['inserted']+inserted,skipped=job['skipped']+skipped,
                             window_start=new_start,window_end=new_end,snapshot=job['target'])
+        pages_this_run+=1
         job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(scope,)).fetchone()
     return job['target']
+

@@ -57,7 +57,7 @@ def status(root):
         result['feeds']=[{k:r[k] for k in r.keys() if k!='cursor'} for r in db.execute('SELECT * FROM feed_jobs')]
         result['checkpoints']=[dict(r) for r in db.execute("SELECT * FROM checkpoints WHERE scope IN ('assets','security_master','actions','news','sec','fred','alpha','migration:action_sources:done','migration:action_sources')")]
         result['providers']=[dict(r) for r in db.execute("SELECT * FROM health WHERE provider IN ('alpaca-bars','actions','news','sec','fred','alpha')")]
-        for key in ('universe','warehouse','database_diagnostics'):
+        for key in ('universe','modeling_universe','validation','warehouse','database_diagnostics'):
             row=one('SELECT value,updated_at FROM runtime_meta WHERE key=?',(key,))
             result[key]={'value':json.loads(row['value']),'as_of':row['updated_at']} if row else None
         result['pages']={'page_count':db.execute('PRAGMA page_count').fetchone()[0],
@@ -119,3 +119,4 @@ def compact(root):
             return {'integrity_check':after_integrity,'before':before,'after':sizes(root),'deleted_records':0}
     finally:
         store.close()
+

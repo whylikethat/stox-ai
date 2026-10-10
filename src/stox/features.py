@@ -42,7 +42,7 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=
         tickers=set(a.get('resolved_tickers',[])) | {a.get(k) for k in ('symbol','old_symbol','new_symbol','initiating_symbol','target_symbol')}
         for ticker in tickers-{None,''}: by_symbol[ticker].append(a)
     frames,errors = [],{}
-    total_rows=sum(r[1] for r in store.warehouse_summary())
+    total_rows=sum(r[1] for r in store.warehouse_summary() if r[0] in set(symbols))
     stride=max(1,int(np.ceil(total_rows/max_rows)))
     reference=store.bars('SPY')
     benchmark=market_features(reference,by_symbol['SPY'],calendar).set_index('session') if not reference.empty else None
@@ -235,3 +235,4 @@ def make_labels(features, store, calendar, horizons, friction, progress=None):
             benchmark=result[result.symbol==symbol].set_index(['session','horizon']).target
             result['benchmark_'+symbol]=[benchmark.get((s,h),np.nan) for s,h in zip(result.session,result.horizon)]
     return result
+

@@ -34,3 +34,6 @@ cache/
 htmlcov/
 .mypy_cache/
 .stox-local/
+
+
+.venv-*/

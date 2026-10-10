@@ -13,7 +13,7 @@ from .security import SecurityMaster
 from .ingestion import Ingestor
 from .features import build_features,make_labels
 from .models import registry_train
-from .ranking import forecast_rows,leaderboards
+from .ranking import forecast_rows,leaderboards,rank
 from .predictions import settle,issue,performance
 from .holdings import review
 from .reporting import evidence,write_reports
@@ -95,6 +95,12 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                 warnings.extend(settlement['warnings'])
             with progress.stage('models',total=len(cfg.horizons)):
                 logger.info(encode({'run':rid,'stage':'models','label_rows':len(labels)}))
+                from .features import FAMILIES
+                health={r['provider']:r['status'] for r in store.db.execute('SELECT * FROM health')}
+                if not synthetic:
+                    for family,provider in (('news','news'),('fundamentals','sec'),('macro','fred')):
+                        if health.get(provider) not in ('PASS',):
+                            labels[FAMILIES[family]]=float('nan')
                 models=registry_train(labels,cfg,store,force_train,started,progress=progress)
             if set(models)!=set(cfg.horizons):
                 raise RuntimeError('FORECASTING BLOCKED: all active horizons need trained models; inspect stox status')
@@ -119,10 +125,12 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                 for row in rows:
                     row['primary_rank']=next((p['rank'] for p in primary if p['symbol']==row['symbol'] and row['horizon']==30),None)
                     row['across_rank']=next((p['rank'] for p in across if p['symbol']==row['symbol'] and p['horizon']==row['horizon']),None)
+                snapshots={kind:store.records(kind,started) for kind in ('news','filings','facts','earnings','actions')}
+                context={s:evidence(store,s,started,cfg,snapshots) for s in {r['symbol'] for r in rows}}
                 holdings=review(store,rows,rid)
                 highlights={r['symbol'] for r in primary[:3]+across[:3]}|{h['symbol'] for h in holdings if h['status']!='HEALTHY'}
                 for holding in holdings:
-                    holding['evidence']=evidence(store,holding['symbol'],started,cfg)
+                    holding['evidence']=context.get(holding['symbol'],{})
                 details=[]
                 with threadpool_limits(limits=cfg.threads):
                     for symbol in sorted(highlights|{r['symbol'] for r in primary+across}):
@@ -131,10 +139,16 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                         if not fr.empty and symbol in highlights:
                             for r in forecasts:
                                 r['explanations']=models[r['horizon']].explain(fr.iloc[0].to_dict())
-                        details.append({'symbol':symbol,'forecasts':forecasts,'evidence':evidence(store,symbol,started,cfg)})
+                        details.append({'symbol':symbol,'forecasts':forecasts,'evidence':context.get(symbol,{})})
+                for row in rows:
+                    row['catalyst_context']=context[row['symbol']]
+                primary,across=leaderboards(rows)
                 if any(not m.metadata['validated'] for m in models.values()):
                     warnings.append('One or more research models have not passed qualification; unvalidated horizons cannot issue official recommendations')
                 warnings.append('Historical universe reconstruction is approximate; historical asset metadata and revisions are incomplete before first local observation')
+                screen=store.db.execute("SELECT value FROM runtime_meta WHERE key='modeling_universe'").fetchone()
+                if screen:
+                    warnings.append(json.loads(screen[0])['note'])
                 cleanup_models(store)
                 metadata={'enrichment_profile':{k:getattr(cfg,k) for k in ('enable_news','news_lookback_days','enable_sec','enable_fred','enable_alpha_vantage')},'version':__version__,'git_commit':git_commit(),'run_started':started,
                           'market_session':session,'market_cutoff':cal.close(session).isoformat(),'event_cutoff':started,
@@ -143,31 +157,43 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                           'data_digest':digest([(s,store.checkpoint('bars:'+s)) for s in symbols]),'universe_digest':digest(assets),'universe_diagnostics':master.persist_diagnostics(cfg,session),
                           'friction_bps':cfg.friction_bps,'provider_health':[dict(r) for r in store.db.execute('SELECT * FROM health')],
                           'run_mode':'synthetic' if synthetic else 'offline' if offline else 'live',
-                          'ranking_rule':'P(gain) first; expected return within comparable calibration resolution',
+                          'modeling_universe':json.loads(screen[0]) if screen else {'mode':'explicit or cached'},
+                          'ranking_rule':'Detected contradictions ranked last; P(gain), then expected return within calibration resolution; estimates unchanged',
                           'limits':'No brokerage, trades, capital allocation, continuous monitoring, or tax advice'}
                 # Issuance occurs after all computation, never backdated to data fetch start.
                 issued=started if synthetic else now_iso()
                 metadata['forecast_issued_at']=issued
-                signature=digest([session,metadata['data_digest'],metadata['model_ids'],[(r['symbol'],r['horizon'],r['p_gain'],r['expected_return']) for r in rows]])
-                duplicate=store.checkpoint('last_forecast_signature')==signature
-                if duplicate:
-                    warnings.append('Same market/model forecast snapshot: no duplicate official forecasts issued')
-                    ids=[]
-                elif not synthetic and offline:
-                    warnings.append('Offline research runs do not issue official prospective forecasts')
+                before=store.db.execute('SELECT count(*) FROM forecasts').fetchone()[0]
+                if not synthetic and offline:
+                    warnings.append('Offline research runs do not issue live prospective forecasts')
                     ids=[]
                 else:
                     ids=issue(store,cal,rows,issued,metadata)
-                    store.advance('last_forecast_signature',signature)
+                created=store.db.execute('SELECT count(*) FROM forecasts').fetchone()[0]-before
+                if ids and not created:
+                    warnings.append('Existing research snapshot reused; no duplicate forecasts created')
+                conflicts=sum(r['consistency_status']=='conflicting' for r in rows)
+                if conflicts:
+                    warnings.append(f'{conflicts} forecasts have conflicting probability/return estimates; ranked conservatively and never qualified')
+                from .models import validation_diagnostics
+                qualified_ids=[fid for fid,symbol in zip(ids,sorted({r['symbol'] for r in rows})) if any(r['qualified'] for r in rows if r['symbol']==symbol)]
                 report={'run_id':rid,'synthetic':synthetic,'metadata':metadata,'warnings':warnings,'primary_30d':primary,
                         'across_horizons':across,'details':details,'research_candidates':rows,'holdings':holdings,
                         'prospective':performance(store),'backtests':{str(h):m.metadata['evaluation'] for h,m in models.items()},
-                        'official_forecast_ids':ids,'settlement':settlement}
+                        'research_forecast_ids':ids,'new_forecast_count':created,
+                        'official_forecast_ids':qualified_ids,'qualified_forecast_ids':qualified_ids,'settlement':settlement,
+                        'qualified_30d':rank([r for r in rows if r['qualified'] and r['horizon']==30])[:20],
+                        'qualified_across_horizons':rank([r for r in rows if r['qualified']])[:20],
+                        'by_horizon':{str(h):rank([r for r in rows if r['horizon']==h]) for h in cfg.horizons},
+                        'validation':{str(h):validation_diagnostics(m.metadata,cfg) for h,m in models.items()}}
+                store.meta('validation',report['validation'])
             with progress.stage('report-export'):
                 path=write_reports(cfg.root,report)
+                from .reporting import cleanup_reports
+                cleanup_reports(cfg.root,cfg.report_retention_runs)
             with store.db:
                 store.db.execute('UPDATE runs SET finished_at=?,status=?,metadata=? WHERE id=?',(now_iso(),'success',encode(metadata),rid))
-            logger.info(encode({'run':rid,'stage':'complete','official_forecasts':len(ids)}))
+            logger.info(encode({'run':rid,'stage':'complete','research_snapshots':len(ids)}))
             print('Stage summary: '+', '.join(r['name']+'='+r['status'] for r in store.db.execute('SELECT name,status FROM stages WHERE run_id=? ORDER BY started_at',(rid,))),flush=True)
             return report,path
     except BaseException as exc:
@@ -195,3 +221,4 @@ def cleanup_models(store):
     for directory in ('cache','warehouse','models'):
         for p in (store.root/directory).rglob('*.tmp'):
             p.unlink(missing_ok=True)
+

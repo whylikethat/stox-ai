@@ -1,3 +1,7 @@
+# STOX-AI 2.1 — research forecasts with separate strict validation
+
+For the complete healthy-drive migration, exact production profile and Kali commands, see [Production upgrade](docs/PRODUCTION_UPGRADE.md). Research rankings are always visible when core data/models are available; qualification never filters them out.
+
 # STOX-AI
 
 **2.0.5 fast-start:** use [the bounded starter profile](docs/FAST_START.md) for 110 diversified stocks/ETFs, price history from 2023, and optional enrichment explicitly disabled. News now has its own lookback. The guide gives fresh-SSD setup, checks, bootstrap/run and later expansion commands.
@@ -175,3 +179,4 @@ stox status
 ```
 
 Do not delete your database or warehouse. Completed symbols with verified durable bars are reused; partial symbols replay with idempotent merges. Legacy checkpoints pointing beyond durable history are invalidated with an audit record, and only those symbols are retried. Empty responses cannot mark a price stage complete. Existing inactive/non-queryable archives are retained but excluded from new recommendations. This does not certify historical listing membership or reconstruct missing rename/delisting chains.
+

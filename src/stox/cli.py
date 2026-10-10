@@ -35,6 +35,11 @@ def parser():
     sub.add_parser('universe',help='Universe counts, unresolved references and quarantine reasons')
     s=sub.add_parser('report')
     s.add_argument('--format',choices=('html','json','md','ai'),default='html')
+    w=sub.add_parser('watchlist',help='User-managed symbols; never populated automatically')
+    ws=w.add_subparsers(dest='action',required=True)
+    ws.add_parser('list')
+    for action in ('add','remove'):
+        ws.add_parser(action).add_argument('symbol')
     s=sub.add_parser('holdings')
     hs=s.add_subparsers(dest='action',required=True)
     a=hs.add_parser('add')
@@ -57,6 +62,9 @@ def main(argv=None):
         readonly = args.command in ('status','paths','report') or (args.command=='diagnose' and not cfg.root.exists())
         with nullcontext() if readonly else runtime_environment(cfg.root):
             return dispatch(args,cfg)
+    except KeyboardInterrupt:
+        print('Interrupted safely. Completed checkpoints retained; rerun the same command to resume.',file=sys.stderr)
+        return 130
     except (ValueError,RuntimeError,OSError,sqlite3.Error) as exc:
         print(f'STOX-AI: {exc}',file=sys.stderr)
         return 1
@@ -78,12 +86,9 @@ def dispatch(args,cfg):
     elif args.command in ('run','bootstrap'):
         from .engine import run
         report,path=run(cfg,offline=args.offline,force_train=args.retrain)
-        print(f'Completed. {len(report["primary_30d"])} qualifying 30D opportunities; {len(report["official_forecast_ids"])} official forecasts.')
-        if not report['primary_30d']:
-            print('No sufficiently strong opportunity this run.')
-        for r in report['primary_30d'][:3]:
-            print(f'#{r["rank"]} {r["symbol"]}: P(gain) {r["p_gain"]:.0%}, expected net {r["expected_return"]:.1%}')
-        print(f'{len(report["warnings"])} data/model notices. Reports: {path}')
+        from .reporting import terminal
+        print(terminal(report))
+        print(f'Reports: {path}')
     elif args.command=='doctor':
         from .doctor import doctor
         if args.vintages and not args.live:
@@ -134,6 +139,21 @@ def dispatch(args,cfg):
                 master=SecurityMaster(store)
                 master.ensure()
                 print(json.dumps({'counts':master.diagnostics(cfg),'excluded':[dict(r) for r in store.db.execute("SELECT asset_id,provider_symbol,reason FROM security_master WHERE queryable=0")], 'unresolved_requests':[dict(r) for r in store.db.execute("SELECT * FROM health WHERE provider LIKE 'security-request:%' AND status='WARN'")]},indent=2))
+            elif args.command=='watchlist':
+                if args.action=='list':
+                    print(json.dumps([r[0] for r in store.db.execute('SELECT symbol FROM watchlist ORDER BY symbol')]))
+                else:
+                    from .security import ticker_shape,identifier_kind
+                    from .storage import now_iso
+                    symbol=args.symbol.strip().upper()
+                    if not ticker_shape(symbol) or identifier_kind(symbol):
+                        raise ValueError('Watchlist requires a ticker, not a security identifier')
+                    with store.lock(),store.transaction():
+                        if args.action=='add':
+                            store.db.execute('INSERT OR IGNORE INTO watchlist VALUES(?,?)',(symbol,now_iso()))
+                        else:
+                            store.db.execute('DELETE FROM watchlist WHERE symbol=?',(symbol,))
+                    print('Watchlist updated.')
             elif args.action=='list':
                 print(json.dumps([dict(r) for r in store.db.execute('SELECT * FROM holdings WHERE active=1')],indent=2))
             elif args.action=='add':
@@ -155,3 +175,4 @@ def dispatch(args,cfg):
 
 if __name__=='__main__':
     raise SystemExit(main())
+
