@@ -1,5 +1,7 @@
 # STOX-AI
 
+**2.0.5 fast-start:** use [the bounded starter profile](docs/FAST_START.md) for 110 diversified stocks/ETFs, price history from 2023, and optional enrichment explicitly disabled. News now has its own lookback. The guide gives fresh-SSD setup, checks, bootstrap/run and later expansion commands.
+
 **2.0.4 local storage:** setup now keeps its downloads/build files inside the repository, reuses a supported existing Python environment, and verifies installation. Runtime temporary files stay under the selected data root. `stox paths` shows all locations without opening the database. See [local installation and recovery](docs/LOCAL_STORAGE.md).
 
 **2.0.3 bootstrap repair:** if you have an existing interrupted bootstrap, follow the [non-destructive upgrade and resume procedure](docs/BOOTSTRAP_REPAIR.md) before restarting. It preserves `.stox`, adds page checkpoints and batches database writes. `stox status` is now a fast read-only command.

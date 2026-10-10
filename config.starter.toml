@@ -1,0 +1,34 @@
+# Bounded operational profile. Validation gates are unchanged.
+# Keep this file beside .secrets/providers.env in the repository.
+[stox]
+root = ".stox"
+horizons = [20, 30, 60, 90]
+history_start = "2023-01-01"
+enable_news = false
+news_lookback_days = 90
+enable_sec = false
+enable_fred = false
+enable_alpha_vantage = false
+threads = 2
+# Representative diversified research universe; assets/liquidity are validated at run time.
+symbols = [
+  # Technology / semiconductors
+  "AAPL", "MSFT", "ORCL", "CRM", "ADBE", "IBM", "CSCO", "ACN", "INTU", "NOW",
+  "NVDA", "AMD", "AVGO", "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "MU", "ADI",
+  # Financials
+  "JPM", "BAC", "WFC", "C", "GS", "MS", "BLK", "SCHW", "AXP", "V", "MA",
+  # Health care
+  "JNJ", "UNH", "LLY", "ABBV", "MRK", "PFE", "AMGN", "GILD", "TMO", "ABT",
+  # Industrials / energy
+  "CAT", "DE", "HON", "GE", "RTX", "LMT", "UNP", "UPS", "ETN", "BA",
+  "XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX",
+  # Consumer discretionary / staples
+  "AMZN", "TSLA", "HD", "LOW", "MCD", "SBUX", "NKE", "TJX", "BKNG",
+  "WMT", "COST", "PG", "KO", "PEP", "MDLZ", "CL", "PM",
+  # Communications / utilities / REITs
+  "GOOGL", "META", "NFLX", "DIS", "CMCSA", "VZ", "T", "TMUS",
+  "NEE", "DUK", "SO", "AEP", "EXC", "AMT", "PLD", "EQIX", "O",
+  # Ordinary broad-market and sector ETFs
+  "SPY", "QQQ", "IWM", "DIA", "VTI", "RSP", "XLK", "XLF", "XLV", "XLI",
+  "XLE", "XLY", "XLP", "XLC", "XLU", "XLRE", "XLB", "SMH"
+]

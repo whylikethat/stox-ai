@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.5
+
+- Add a bounded diversified starter profile and independent news lookback.
+- Respect explicit news/SEC/FRED/Alpha switches in ingestion, live doctor, features and evidence.
+- Filter restricted corporate actions using authoritative tickers with universe-scoped durable cursors.
+- Preserve price-only training, disclose selected inputs, and backfill earlier price prefixes in durable windows.
+- Add offline provider, resume, history-expansion and four-horizon starter integration regressions.
+
 ## 2.0.4 — 2026-10-07
 
 - Keep pip downloads, build/rollback temporary files and installer caches under ignored `.stox-local/`; install dependencies into the repository `.venv`. Disable inherited pip user/target/prefix settings that could redirect installation.

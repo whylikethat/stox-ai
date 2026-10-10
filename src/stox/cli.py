@@ -69,6 +69,8 @@ def dispatch(args,cfg):
             raise ValueError('Use --root with an isolated demo directory, e.g. stox --root ./demo-data demo')
         from .demo import seed
         from .engine import run
+        if cfg.symbols:
+            cfg.symbols=tuple(dict.fromkeys(('SPY','QQQ')+cfg.symbols))[:8]
         stamp=seed(cfg,args.end)
         report,path=run(cfg,offline=True,force_train=True,timestamp=stamp,synthetic=True)
         print('SYNTHETIC DEMONSTRATION: not live investment evidence')

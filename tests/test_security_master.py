@@ -49,7 +49,9 @@ class FixtureAlpaca:
             raise ProviderError('data.alpaca.markets: HTTP 500: retry exhausted',status_code=500)
         yield {ticker:[] if ticker in self.empty else rows}
 
-    def event_page(self,feed,start,end,cursor=None,snapshot=None):
+    def event_page(self,feed,start,end,cursor=None,snapshot=None,symbols=None):
+        if symbols is not None:
+            assert all(isinstance(r,MarketDataSymbol) and r.ticker != "09175M861" for r in symbols)
         rows=copy.deepcopy(FIXTURE['actions']) if feed=='actions' else []
         return [r for r in rows if start <= str(r.get('ex_date') or r.get('effective_date') or start)[:10] <= end],None
 

@@ -26,7 +26,7 @@ class Progress:
             self.finish('interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed')
             raise
         else:
-            self.finish('degraded' if self.counters.get('errors') else 'complete')
+            self.finish('disabled' if self.counters.get('disabled') else 'degraded' if self.counters.get('errors') else 'complete')
 
     def update(self, force=False, **counts):
         self.counters.update(counts)

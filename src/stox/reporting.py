@@ -30,11 +30,11 @@ def table(rows):
         lines.append(f'| {r.get("rank", "—")} | {r["symbol"]} | {r["horizon"]}D | {percent(r["p_gain"])} | {percent(r["expected_return"])} | {percent(r["p_loss_10"])} | {r["quality_label"]} |')
     return '\n'.join(lines) if rows else '**No sufficiently strong opportunity this run.**'
 
-def evidence(store,symbol,cutoff):
-    news=[r for r in store.records('news',cutoff) if symbol in r.get('symbols',[])][-10:]
-    filings=[r for r in store.records('filings',cutoff) if r.get('symbol')==symbol][-6:]
-    facts=[r for r in store.records('facts',cutoff) if r.get('symbol')==symbol and r.get('concept') in ('Assets','Liabilities','NetIncomeLoss','Revenues','OperatingIncomeLoss')][-12:]
-    earnings=[r for r in store.records('earnings',cutoff) if r.get('symbol')==symbol]
+def evidence(store,symbol,cutoff,cfg=None):
+    news=[r for r in (store.records('news',cutoff) if cfg is None or cfg.enable_news else []) if symbol in r.get('symbols',[])][-10:]
+    filings=[r for r in (store.records('filings',cutoff) if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol][-6:]
+    facts=[r for r in (store.records('facts',cutoff) if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol and r.get('concept') in ('Assets','Liabilities','NetIncomeLoss','Revenues','OperatingIncomeLoss')][-12:]
+    earnings=[r for r in (store.records('earnings',cutoff) if cfg is None or cfg.enable_alpha_vantage else []) if r.get('symbol')==symbol]
     actions=relevant(store.records('actions',cutoff),symbol)[-10:]
     return {'news':news,'filings':filings,'fundamental_evidence':facts,'earnings':earnings,'corporate_actions':actions,
             'known_gaps':['Unverified future earnings dates must be treated as unknown','Historical security type/universe metadata is incomplete','Free provider corporate-action announcements may be late']}

@@ -13,6 +13,12 @@ from .providers.http import ProviderError
 from .progress import Progress
 from .streams import ingest_feed, reuse_legacy_actions, action_raw
 
+def action_scope(cfg, symbols):
+    # Full-universe legacy receipts remain valid. Restricted coverage must never
+    # advance the full-universe checkpoint or reuse another universe's cursor.
+    return 'actions:'+digest([sorted(symbols),cfg.history_start])[:24] if cfg.symbols else 'actions'
+
+
 class Ingestor:
     def __init__(self, cfg, store, calendar, alpaca=None, progress=None):
         self.cfg,self.store,self.calendar = cfg,store,calendar
@@ -60,7 +66,10 @@ class Ingestor:
             self.events('actions',master,stamp,session)
         try:
             with self.progress.stage('news'):
-                self.events('news',master,stamp,session)
+                if self.cfg.enable_news:
+                    self.events('news',master,stamp,session)
+                else:
+                    self.disabled('news',warnings)
         except Exception as exc:
             warnings.append(f'News unavailable: {exc}')
             self.store.health('news','WARN',str(exc))
@@ -75,6 +84,24 @@ class Ingestor:
             summary=self.store.bar_summary(symbol)
             checkpoint=self.store.checkpoint(scope)
             master.bind_history(reference,stamp)
+            covered_start=self.store.checkpoint(scope+':history_start')
+            if summary and covered_start and self.cfg.history_start<covered_start:
+                # Extend only the missing prefix, with a durable <=31-day window receipt.
+                prefix=scope+':prefix:'+self.cfg.history_start
+                begin=self.store.checkpoint(prefix) or self.cfg.history_start
+                while begin<covered_start:
+                    self.store.storage_check(self.cfg.soft_storage_gb,self.cfg.hard_storage_gb)
+                    stop=min(pd.Timestamp(begin)+pd.Timedelta(days=30),pd.Timestamp(covered_start)-pd.Timedelta(days=1)).date().isoformat()
+                    for page in self.alpaca.bars([reference],begin,stop+'T23:59:59Z'):
+                        if any(k!=symbol for k in page):
+                            raise ProviderError('Alpaca bars returned an unexpected symbol; response not merged')
+                        rows=[parse_bar(symbol,r,self.calendar,stamp) for r in page.get(symbol,[]) or []]
+                        rows=[r for r in rows if begin<=r['session']<=stop]
+                        self.store.put_bars(symbol,pd.DataFrame(rows))
+                    begin=(pd.Timestamp(stop)+pd.Timedelta(days=1)).date().isoformat()
+                    self.store.advance(prefix,begin)
+                    self.progress.update(processed=index,history_window_end=stop)
+                self.store.advance(scope+':history_start',self.cfg.history_start)
             if checkpoint==session and summary and summary['last_session']==session:
                 skipped+=1
                 if index%100==0: self.progress.update(processed=index+1,skipped=skipped)
@@ -112,6 +139,7 @@ class Ingestor:
             else:
                 with self.store.transaction():
                     self.store.advance(scope,session)
+                    self.store.advance(scope+':history_start',min(covered_start or self.cfg.history_start,self.cfg.history_start))
                     self.store.health(scope,'PASS',f'{count} bars returned; completed session verified')
             self.progress.update(processed=index+1,skipped=skipped,errors=len(warnings))
         self.progress.update(processed=len(requests),skipped=skipped,errors=len(warnings))
@@ -143,82 +171,112 @@ class Ingestor:
                         self.store.record('news',row['id'],row,available)
                         inserted+=1
             return inserted,skipped
-        checkpoint=self.store.checkpoint(feed)
-        pending=self.store.db.execute('SELECT status FROM feed_jobs WHERE scope=?',(feed,)).fetchone()
+        references=master.requests(self.cfg) if feed=='actions' and self.cfg.symbols else None
+        scope=action_scope(self.cfg,[r.ticker for r in references]) if references else feed
+        if feed=='news':
+            scope='news:lookback:'+str(self.cfg.news_lookback_days)
+        def start():
+            if feed=='actions':
+                covered=self.store.checkpoint(scope+':history_start')
+                return self.cfg.history_start if covered and self.cfg.history_start<covered else self._start(scope,35)
+            floor=(utc(stamp)-pd.Timedelta(days=self.cfg.news_lookback_days)).date().isoformat()
+            previous=self.store.checkpoint(scope)
+            return max(floor,(utc(previous)-pd.Timedelta(days=7)).date().isoformat()) if previous else floor
+        checkpoint=self.store.checkpoint(scope)
+        pending=self.store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(scope,)).fetchone()
         # Brief repeat invocations reuse a covered snapshot. Later runs poll bounded
         # correction overlaps; metadata exposes the precise provider cutoff.
-        if checkpoint and utc(checkpoint)>=utc(stamp)-pd.Timedelta(minutes=self.cfg.event_refresh_minutes) and (feed!='actions' or utc(checkpoint)>=self.calendar.close(session)) and not (pending and pending[0]=='running'):
+        expand_history=feed=='actions' and self.cfg.history_start<(self.store.checkpoint(scope+':history_start') or self.cfg.history_start)
+        if checkpoint and not expand_history and utc(checkpoint)>=utc(stamp)-pd.Timedelta(minutes=self.cfg.event_refresh_minutes) and (feed!='actions' or utc(checkpoint)>=self.calendar.close(session)) and not (pending and pending['status']=='running'):
             self.progress.update(skipped=1,note='completed snapshot reused')
             return
-        overlap=35 if feed=='actions' else 7
-        completed=ingest_feed(self.store,self.alpaca,feed,self._start(feed,overlap),stamp,consume,self.progress)
+        coverage_start=(self.store.checkpoint(scope+':history_start') if expand_history and pending and pending['status']=='running' else self.cfg.history_start)
+        completed=ingest_feed(self.store,self.alpaca,feed,start(),stamp,consume,self.progress,scope=scope,symbols=references,history_start=coverage_start if feed=='actions' else None)
+        if expand_history and pending and pending['status']=='running' and pending['start']>self.cfg.history_start:
+            completed=ingest_feed(self.store,self.alpaca,feed,self.cfg.history_start,stamp,consume,self.progress,scope=scope,symbols=references,history_start=self.cfg.history_start if feed=='actions' else None)
         # A multi-day interrupted job must finish its frozen request before catching up to now.
         if completed[:10]<stamp[:10]:
-            ingest_feed(self.store,self.alpaca,feed,self._start(feed,overlap),stamp,consume,self.progress)
+            completed=ingest_feed(self.store,self.alpaca,feed,start(),stamp,consume,self.progress,scope=scope,symbols=references,history_start=self.cfg.history_start if feed=='actions' else None)
+
+    def disabled(self, provider, warnings):
+        message=f'{provider} enrichment intentionally disabled by configuration'
+        self.store.health(provider,'DISABLED',message)
+        self.progress.update(skipped=1,disabled=True,note=message)
+        warnings.append(message)
 
     def optional(self, symbols, stamp, warnings):
-        try:
-            with self.progress.stage('sec',total=len(symbols)):
-                sec = SEC(self.cfg.secrets.get('SEC_USER_AGENT'))
-                mapping = sec.mappings()
-                sec_target=self.store.checkpoint('sec:target') or stamp
-                self.store.advance('sec:target',sec_target)
-                master=SecurityMaster(self.store)
-                for index,symbol in enumerate(symbols):
-                    if symbol not in mapping: continue
-                    cik = mapping[symbol]
-                    reference=master.resolve(symbol)
-                    # Stable observation, not a new effective-date row on every run.
-                    master.identifier(reference.alpaca_asset_id,'sec_cik',cik,'sec_edgar','ticker_mapping')
-                    scope = 'sec:'+cik
-                    if self.store.checkpoint(scope) and self.store.checkpoint(scope)[:10] == sec_target[:10]:
-                        self.progress.update(processed=index+1)
-                        continue
-                    filings,facts = sec.company(cik,store=self.store,snapshot=sec_target[:10])
-                    rows=[('filings',r['accessionNumber'],r) for r in filings]
-                    rows.extend(('facts',digest([cik,r['concept'],r['unit'],r.get('start'),r.get('end'),r.get('accn')]),r) for r in facts)
-                    for offset in range(0,len(rows),1000):
-                        with self.store.transaction():
-                            for kind,rid,row in rows[offset:offset+1000]:
-                                row['symbol']=symbol
-                                self.store.record(kind,rid,row,row['available_at'])
-                    self.store.advance(scope,sec_target)
-                    self.progress.update(processed=index+1)
-                with self.store.transaction():
-                    self.store.advance('sec',sec_target)
-                    self.store.db.execute("DELETE FROM checkpoints WHERE scope='sec:target'")
-                self.store.health('sec','PASS','Filings and company facts updated')
-        except Exception as exc:
-            warnings.append(f'SEC unavailable: {exc}')
-            self.store.health('sec','WARN',str(exc))
-        try:
-            with self.progress.stage('fred',total=len(self.cfg.macro_series)):
-                fred = FRED(self.cfg.secrets.get('FRED_API_KEY'))
-                for index,series in enumerate(self.cfg.macro_series):
-                    scope='fred:'+series
-                    if self.store.checkpoint(scope) and self.store.checkpoint(scope)[:10] == stamp[:10]: continue
-                    while not self.store.checkpoint(scope) or self.store.checkpoint(scope)[:10] < stamp[:10]:
-                        # Provider page offset and frozen vintage cutoff are persisted atomically.
-                        target=self.store.checkpoint(scope+':target') or stamp
-                        offset=int(self.store.checkpoint(scope+':offset') or 0)
-                        vintage_start=self.store.checkpoint(scope) or '1776-07-04'
-                        for rows,next_offset,done in fred.observation_pages(series,self.cfg.history_start,target,offset,vintage_start):
+        if not self.cfg.enable_sec:
+            with self.progress.stage('sec'):
+                self.disabled('sec',warnings)
+        else:
+            try:
+                with self.progress.stage('sec',total=len(symbols)):
+                    sec = SEC(self.cfg.secrets.get('SEC_USER_AGENT'))
+                    mapping = sec.mappings()
+                    sec_target=self.store.checkpoint('sec:target') or stamp
+                    self.store.advance('sec:target',sec_target)
+                    master=SecurityMaster(self.store)
+                    for index,symbol in enumerate(symbols):
+                        if symbol not in mapping: continue
+                        cik = mapping[symbol]
+                        reference=master.resolve(symbol)
+                        # Stable observation, not a new effective-date row on every run.
+                        master.identifier(reference.alpaca_asset_id,'sec_cik',cik,'sec_edgar','ticker_mapping')
+                        scope = 'sec:'+cik
+                        if self.store.checkpoint(scope) and self.store.checkpoint(scope)[:10] == sec_target[:10]:
+                            self.progress.update(processed=index+1)
+                            continue
+                        filings,facts = sec.company(cik,store=self.store,snapshot=sec_target[:10])
+                        rows=[('filings',r['accessionNumber'],r) for r in filings]
+                        rows.extend(('facts',digest([cik,r['concept'],r['unit'],r.get('start'),r.get('end'),r.get('accn')]),r) for r in facts)
+                        for offset in range(0,len(rows),1000):
                             with self.store.transaction():
-                                for row in rows:
-                                    self.store.record('macro',f'{series}:{row["date"]}:{row["realtime_start"]}',row,row['available_at'])
-                                self.store.advance(scope+':target',target)
-                                self.store.advance(scope+':offset',next_offset)
-                                if done:
-                                    self.store.advance(scope,target)
-                                    self.store.db.execute('DELETE FROM checkpoints WHERE scope IN (?,?)',(scope+':target',scope+':offset'))
-                                self.progress.update(processed=index,pages=self.progress.counters['pages']+1)
-                self.store.advance('fred',stamp)
-                self.store.health('fred','PASS','Vintage-aware history refreshed')
-        except Exception as exc:
-            warnings.append(f'Macro unavailable: {exc}')
-            self.store.health('fred','WARN',str(exc))
+                                for kind,rid,row in rows[offset:offset+1000]:
+                                    row['symbol']=symbol
+                                    self.store.record(kind,rid,row,row['available_at'])
+                        self.store.advance(scope,sec_target)
+                        self.progress.update(processed=index+1)
+                    with self.store.transaction():
+                        self.store.advance('sec',sec_target)
+                        self.store.db.execute("DELETE FROM checkpoints WHERE scope='sec:target'")
+                    self.store.health('sec','PASS','Filings and company facts updated')
+            except Exception as exc:
+                warnings.append(f'SEC unavailable: {exc}')
+                self.store.health('sec','WARN',str(exc))
+        if not self.cfg.enable_fred:
+            with self.progress.stage('fred'):
+                self.disabled('fred',warnings)
+        else:
+            try:
+                with self.progress.stage('fred',total=len(self.cfg.macro_series)):
+                    fred = FRED(self.cfg.secrets.get('FRED_API_KEY'))
+                    for index,series in enumerate(self.cfg.macro_series):
+                        scope='fred:'+series
+                        if self.store.checkpoint(scope) and self.store.checkpoint(scope)[:10] == stamp[:10]: continue
+                        while not self.store.checkpoint(scope) or self.store.checkpoint(scope)[:10] < stamp[:10]:
+                            # Provider page offset and frozen vintage cutoff are persisted atomically.
+                            target=self.store.checkpoint(scope+':target') or stamp
+                            offset=int(self.store.checkpoint(scope+':offset') or 0)
+                            vintage_start=self.store.checkpoint(scope) or '1776-07-04'
+                            for rows,next_offset,done in fred.observation_pages(series,self.cfg.history_start,target,offset,vintage_start):
+                                with self.store.transaction():
+                                    for row in rows:
+                                        self.store.record('macro',f'{series}:{row["date"]}:{row["realtime_start"]}',row,row['available_at'])
+                                    self.store.advance(scope+':target',target)
+                                    self.store.advance(scope+':offset',next_offset)
+                                    if done:
+                                        self.store.advance(scope,target)
+                                        self.store.db.execute('DELETE FROM checkpoints WHERE scope IN (?,?)',(scope+':target',scope+':offset'))
+                                    self.progress.update(processed=index,pages=self.progress.counters['pages']+1)
+                    self.store.advance('fred',stamp)
+                    self.store.health('fred','PASS','Vintage-aware history refreshed')
+            except Exception as exc:
+                warnings.append(f'Macro unavailable: {exc}')
+                self.store.health('fred','WARN',str(exc))
         with self.progress.stage('earnings'):
-            if self.cfg.secrets.get('ALPHAVANTAGE_API_KEY'):
+            if not self.cfg.enable_alpha_vantage:
+                self.disabled('alpha',warnings)
+            elif self.cfg.secrets.get('ALPHAVANTAGE_API_KEY'):
                 try:
                     if (self.store.checkpoint('alpha') or '')[:10] != stamp[:10]:
                         alpha = AlphaVantage(self.cfg.secrets['ALPHAVANTAGE_API_KEY'],self.store,self.cfg.av_daily_budget)

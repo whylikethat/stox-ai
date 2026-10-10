@@ -51,19 +51,24 @@ def doctor(cfg,live=False,vintages=False):
     check('storage',lambda:store.storage_check(cfg.soft_storage_gb,cfg.hard_storage_gb))
     for package in ('numpy','pandas','scikit-learn','pyarrow','duckdb','exchange-calendars'):
         check(package,lambda p=package:importlib.metadata.version(p))
+    def optional(flag,name,action):
+        if flag: check(name,action,False)
+        else: checks.append({'check':name,'status':'DISABLED','detail':'Intentionally disabled by configuration'})
     if live:
         cal=MarketCalendar()
         now=utc()
         check('Alpaca credentials/assets',lambda:len(Alpaca(cfg.secrets).assets()))
         check('Alpaca historical SIP',lambda:sip_preflight(Alpaca(cfg.secrets),cal,now))
-        check('Alpaca news',lambda:len(next(Alpaca(cfg.secrets).news((utc()-pd.Timedelta(days=3)).isoformat(),utc().isoformat()))),False)
+        optional(cfg.enable_news,'Alpaca news',lambda:len(next(Alpaca(cfg.secrets).news((utc()-pd.Timedelta(days=3)).isoformat(),utc().isoformat()))))
         check('Alpaca corporate actions',lambda:len(next(Alpaca(cfg.secrets).actions((utc()-pd.Timedelta(days=7)).isoformat(),utc().isoformat()))))
-        check('SEC',lambda:len(SEC(cfg.secrets.get('SEC_USER_AGENT')).mappings()),False)
-        check('FRED DGS10',lambda:FRED(cfg.secrets.get('FRED_API_KEY')).preflight(),False)
-        if vintages:
+        optional(cfg.enable_sec,'SEC',lambda:len(SEC(cfg.secrets.get('SEC_USER_AGENT')).mappings()))
+        optional(cfg.enable_fred,'FRED DGS10',lambda:FRED(cfg.secrets.get('FRED_API_KEY')).preflight())
+        if vintages and cfg.enable_fred:
             vintage=(now-pd.Timedelta(days=7)).date().isoformat()
             check('ALFRED vintage DGS10',lambda:FRED(cfg.secrets.get('FRED_API_KEY')).preflight(vintage),False)
-        if cfg.secrets.get('ALPHAVANTAGE_API_KEY'):
+        if not cfg.enable_alpha_vantage:
+            optional(False,'Alpha Vantage',lambda:None)
+        elif cfg.secrets.get('ALPHAVANTAGE_API_KEY'):
             check('Alpha Vantage',lambda:len(AlphaVantage(cfg.secrets['ALPHAVANTAGE_API_KEY'],store,cfg.av_daily_budget).earnings()),False)
     else:
         checks.append({'check':'providers','status':'WARN','detail':'Not contacted. Use stox doctor --live explicitly.'})

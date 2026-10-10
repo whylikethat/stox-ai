@@ -3,6 +3,12 @@
 root = ".stox"
 horizons = [20, 30, 60, 90]
 history_start = "2016-01-01"
+# News has an independent rolling horizon, even with full price history.
+enable_news = true
+news_lookback_days = 90
+enable_sec = true
+enable_fred = true
+enable_alpha_vantage = true
 friction_bps = 20.0
 min_price = 5.0
 min_dollar_volume = 20000000.0

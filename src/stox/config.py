@@ -12,6 +12,11 @@ class Config:
     root: Path
     horizons: tuple[int, ...] = (20, 30, 60, 90)
     history_start: str = '2016-01-01'
+    enable_news: bool = True
+    news_lookback_days: int = 90
+    enable_sec: bool = True
+    enable_fred: bool = True
+    enable_alpha_vantage: bool = True
     friction_bps: float = 20
     min_price: float = 5
     min_dollar_volume: float = 20_000_000
@@ -51,6 +56,11 @@ class Config:
             if key in values:
                 values[key] = tuple(values[key])
         cfg = cls(root=location.resolve(), **values)
+        for key in ('enable_news', 'enable_sec', 'enable_fred', 'enable_alpha_vantage'):
+            if type(getattr(cfg,key)) is not bool:
+                raise ValueError(f'{key} must be a boolean')
+        if type(cfg.news_lookback_days) is not int or cfg.news_lookback_days < 1:
+            raise ValueError('news_lookback_days must be a positive integer')
         if 30 not in cfg.horizons or any(h <= 0 for h in cfg.horizons) or len(set(cfg.horizons)) != len(cfg.horizons):
             raise ValueError('Horizons must be unique positive calendar-day values including 30.')
         if not 0 <= cfg.event_refresh_minutes <= 1440:

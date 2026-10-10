@@ -188,8 +188,9 @@ def train_horizon(frame,horizon,cfg):
     d_days=sorted(development.session.unique())
     families=[('price',FAMILIES['price'])]
     for family,columns in FAMILIES.items():
-        if family!='price' and development[columns].notna().mean().mean()>=.4:
-            families.append(('price+'+family,FAMILIES['price']+columns))
+        available=[c for c in columns if development[c].notna().mean()>=.4]
+        if family!='price' and available:
+            families.append(('price+'+family,FAMILIES['price']+available))
     experiments=[]
     for family,columns in families:
         for algorithm in ('logistic','histogram'):
@@ -235,7 +236,7 @@ def train_horizon(frame,horizon,cfg):
             buckets.append({'bucket':number})
     threshold=min((b['bucket']/10 for b in buckets),default=None)
     valid=evaluation['ece']<=cfg.max_calibration_error and evaluation['brier']<=evaluation['base_brier'] and evaluation['blocks']>=cfg.min_validation_blocks
-    champion.metadata={'horizon':horizon,'algorithm':chosen['algorithm'],'family':chosen['family'],
+    champion.metadata={'feature_columns':chosen['columns'],'available_feature_families':[name for name,cols in FAMILIES.items() if development[cols].notna().any().any()],'horizon':horizon,'algorithm':chosen['algorithm'],'family':chosen['family'],
                        'holdout_start':holdout_start,'holdout_end':str(holdout.session.max()),
                        'train_through':champion.train_through,'calibration_through':champion.calibration_through,
                        'experiments':experiments,'evaluation':evaluation,'threshold':threshold,
@@ -259,6 +260,9 @@ def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
             if progress: progress.update(processed=index,horizon=horizon,force=True)
             existing=store.db.execute("SELECT * FROM models WHERE horizon=? AND status='champion' ORDER BY created_at DESC LIMIT 1",(horizon,)).fetchone()
             old=joblib.load(store.root/existing['path']) if existing else None
+            if old and not labels.empty and any(c not in labels or not labels[c].notna().any() for c in old.columns if c not in FAMILIES['price']):
+                # Never reuse an enrichment-dependent champion after its inputs are disabled.
+                old=None
             new_count=int(((labels.horizon==horizon)&(labels.label_end>(old.metadata['holdout_end'] if old else '1900-01-01'))).sum()) if not labels.empty else 0
             age=(pd.Timestamp(stamp)-pd.Timestamp(existing['created_at'])).days if existing else 10**6
             if old and not force and (age<cfg.retrain_days or new_count<cfg.min_new_labels):

@@ -53,7 +53,7 @@ class Alpaca:
                 raise ProviderError('Alpaca: news field missing')
             yield page.get('news') or []
 
-    def event_page(self, feed, start, end, cursor=None, snapshot=None):
+    def event_page(self, feed, start, end, cursor=None, snapshot=None, symbols=None):
         if feed not in ('actions','news'):
             raise ValueError('Unsupported event feed')
         params={'start':start,'end':end,'sort':'asc','limit':1000 if feed=='actions' else 50}
@@ -64,6 +64,10 @@ class Alpaca:
             boundary=(date.fromisoformat(end)+timedelta(days=1)).isoformat()+'T00:00:00Z'
             params['end']=min(boundary,snapshot or boundary)
             params['include_content']='false'
+        if symbols is not None:
+            if feed!='actions' or not symbols or any(not isinstance(s,MarketDataSymbol) for s in symbols):
+                raise ValueError('Corporate-action filters require authoritative MarketDataSymbol references')
+            params['symbols']=','.join(sorted({s.ticker for s in symbols}))
         if cursor: params['page_token']=cursor
         raw=self.http.get(self.base+path,params=params,headers=self.headers)
         key='corporate_actions' if feed=='actions' else 'news'

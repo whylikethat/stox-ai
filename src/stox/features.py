@@ -35,7 +35,7 @@ def market_features(frame, actions, calendar):
     f['return_1'] = ret
     return f
 
-def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=None):
+def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=None, cfg=None):
     actions = store.records('actions')
     by_symbol=defaultdict(list)
     for a in actions:
@@ -95,7 +95,7 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=
     result = pd.concat(frames,ignore_index=True)
     result['cross_rank'] = result.groupby('session').momentum_20.rank(pct=True)
     # Optional families are constructed by timestamp-safe event joins, and selected only by ablation.
-    result = enrich(result,store)
+    result = enrich(result,store,cfg)
     result = result.sort_values(['session','symbol']).reset_index(drop=True)
     result['revision_safe']=True
     for correction in store.records('bar_correction'):
@@ -107,12 +107,12 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=
     if progress: progress.update(processed=len(symbols))
     return result,errors
 
-def enrich(frame, store):
+def enrich(frame, store, cfg=None):
     result = frame.copy()
-    news = store.records('news')
-    filings = store.records('filings')
-    macro = store.records('macro')
-    facts = store.records('facts')
+    news = store.records('news') if cfg is None or cfg.enable_news else []
+    filings = store.records('filings') if cfg is None or cfg.enable_sec else []
+    macro = store.records('macro') if cfg is None or cfg.enable_fred else []
+    facts = store.records('facts') if cfg is None or cfg.enable_sec else []
     news_by,filings_by,facts_by=defaultdict(list),defaultdict(list),defaultdict(list)
     for row in news:
         for symbol in set(row.get('symbols',[])): news_by[symbol].append(row)
@@ -133,7 +133,9 @@ def enrich(frame, store):
             if rows:
                 stamps = np.sort(pd.to_datetime([stamp_fn(r) for r in rows],utc=True).astype('int64'))
                 vals = times.astype('int64').to_numpy()
-                result.loc[idx,field] = np.searchsorted(stamps,vals,side='right')-np.searchsorted(stamps,vals-30*86400*10**9,side='right')
+                counts=(np.searchsorted(stamps,vals,side='right')-np.searchsorted(stamps,vals-30*86400*10**9,side='right')).astype(float)
+                counts[vals<stamps[0]+30*86400*10**9]=np.nan
+                result.loc[idx,field] = counts
         ff = facts_by[symbol]
         if ff:
             # Facts with incomparable fiscal durations are excluded from margin/growth estimates.

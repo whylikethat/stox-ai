@@ -6,18 +6,19 @@ from .storage import Store
 from .holdings import add
 
 
-def seed(cfg, end='2025-12-19'):
+def seed(cfg, end='2025-12-19', start=None):
     cfg.initialize()
     store=Store(cfg.root)
     if store.db.execute('SELECT count(*) FROM forecasts').fetchone()[0]:
         raise ValueError('Demo must use a separate empty data root')
     cal=MarketCalendar()
-    sessions=cal.sessions('2014-01-02',end)
+    sessions=cal.sessions(start or '2014-01-02',end)
+    symbols=tuple(dict.fromkeys(('SPY','QQQ')+tuple(cfg.symbols)))[:8] if cfg.symbols else ('SPY','QQQ','DEMOA','DEMOB','DEMOC','DEMOD','DEMOE','DEMOF')
     rng=np.random.default_rng(271828)
     market=rng.normal(.0003,.008,len(sessions))
     stamp=cal.close(sessions[-1])+pd.Timedelta(hours=2)
     assets=[]
-    for i,symbol in enumerate(('SPY','QQQ','DEMOA','DEMOB','DEMOC','DEMOD','DEMOE','DEMOF')):
+    for i,symbol in enumerate(symbols):
         cyc=np.sin(np.arange(len(sessions))/90+i)*.0006
         returns=market*(.6+.1*i)+rng.normal(.00025,.005,len(sessions))+cyc
         price=(40+i*15)*np.cumprod(1+returns)
@@ -39,6 +40,6 @@ def seed(cfg, end='2025-12-19'):
     from .security import SecurityMaster
     SecurityMaster(store).refresh(assets,stamp.isoformat())
     if not store.db.execute('SELECT 1 FROM holdings').fetchone():
-        add(store,'DEMOA',sessions[-50],float(store.bars('DEMOA').iloc[-50].close),10)
+        add(store,symbols[-1],sessions[-50],float(store.bars(symbols[-1]).iloc[-50].close),10)
     store.close()
     return stamp.isoformat()

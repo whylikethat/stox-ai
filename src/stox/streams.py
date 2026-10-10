@@ -52,57 +52,61 @@ def window_end(start,target):
     return min(date.fromisoformat(start)+timedelta(days=30),date.fromisoformat(target[:10])).isoformat()
 
 
-def ingest_feed(store, api, feed, start, target, consume, progress):
+def ingest_feed(store, api, feed, start, target, consume, progress, scope=None, symbols=None, history_start=None):
     """Returns the fully completed snapshot; unfinished jobs retain original query boundaries.
 
     A page's rows, typed IDs, raw-payload receipt, page receipt and cursor are one FULL
     synchronous WAL transaction. Provider I/O happens before BEGIN. An expired cursor
     replays only its current <=31-day window, never the completed history.
     """
-    job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(feed,)).fetchone()
+    scope=scope or feed
+    job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(scope,)).fetchone()
     if not job or job['status']!='running':
         job_key=digest([feed,start,target])
         with store.transaction():
             store.db.execute('INSERT OR REPLACE INTO feed_jobs VALUES(?,?,?,?,?,?,?,?,0,0,0,0,0,?)',
-                (feed,job_key,start,target,start,window_end(start,target),None,'running',now_iso()))
-        job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(feed,)).fetchone()
+                (scope,job_key,start,target,start,window_end(start,target),None,'running',now_iso()))
+        job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(scope,)).fetchone()
     progress.update(processed=job['processed'],resume_processed=job['processed'],pages=job['pages'],inserted=job['inserted'],skipped=job['skipped'])
     while job['status']=='running':
         try:
-            rows,next_token=api.event_page(feed,job['window_start'],job['window_end'],job['cursor'],job['target'])
+            rows,next_token=api.event_page(feed,job['window_start'],job['window_end'],job['cursor'],job['target'],**({'symbols':symbols} if symbols else {}))
         except ProviderError as exc:
             if (job['cursor'] and exc.status_code in (400,410,422)
                     and re.search(r'(page.?token|cursor).*(invalid|expired)|(invalid|expired).*(page.?token|cursor)',str(exc),re.I)
                     and job['resets']<2):
                 with store.transaction():
-                    store.db.execute('UPDATE feed_jobs SET cursor=NULL,resets=resets+1,updated_at=? WHERE scope=?',(now_iso(),feed))
+                    store.db.execute('UPDATE feed_jobs SET cursor=NULL,resets=resets+1,updated_at=? WHERE scope=?',(now_iso(),scope))
                     store.db.execute('DELETE FROM feed_pages WHERE scope=? AND job_key=? AND window_start=?',
-                                     (feed,job['job_key'],job['window_start']))
-                job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(feed,)).fetchone()
+                                     (scope,job['job_key'],job['window_start']))
+                job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(scope,)).fetchone()
                 continue
             raise
         token_hash=digest(job['cursor'])
         next_hash=digest(next_token) if next_token else None
         if next_token and (next_token==job['cursor'] or store.db.execute(
             'SELECT 1 FROM feed_pages WHERE scope=? AND job_key=? AND window_start=? AND cursor_hash=?',
-            (feed,job['job_key'],job['window_start'],next_hash)).fetchone()):
+            (scope,job['job_key'],job['window_start'],next_hash)).fetchone()):
             raise ProviderError(f'{feed}: repeated pagination token; durable cursor retained')
         with store.transaction():
             inserted,skipped=consume(rows)
             store.db.execute('INSERT OR REPLACE INTO feed_pages VALUES(?,?,?,?,?,?,?)',
-                (feed,job['job_key'],job['window_start'],token_hash,next_hash,len(rows),now_iso()))
+                (scope,job['job_key'],job['window_start'],token_hash,next_hash,len(rows),now_iso()))
             new_start,new_end=job['window_start'],job['window_end']
             done=not next_token and new_end>=job['target'][:10]
             if not next_token and not done:
                 new_start=(date.fromisoformat(new_end)+timedelta(days=1)).isoformat()
                 new_end=window_end(new_start,job['target'])
             store.db.execute('UPDATE feed_jobs SET window_start=?,window_end=?,cursor=?,status=?,pages=pages+1,processed=processed+?,inserted=inserted+?,skipped=skipped+?,updated_at=? WHERE scope=?',
-                (new_start,new_end,next_token,'complete' if done else 'running',len(rows),inserted,skipped,now_iso(),feed))
+                (new_start,new_end,next_token,'complete' if done else 'running',len(rows),inserted,skipped,now_iso(),scope))
             if done:
-                store.advance(feed,job['target'])
+                store.advance(scope,job['target'])
+                if feed=='news': store.advance('news',job['target'])
+                if history_start:
+                    store.advance(scope+':history_start',min(store.checkpoint(scope+':history_start') or history_start,history_start))
                 store.health(feed,'PASS',('Corporate-action' if feed=='actions' else 'News')+' pagination completed')
             progress.update(processed=job['processed']+len(rows),pages=job['pages']+1,
                             inserted=job['inserted']+inserted,skipped=job['skipped']+skipped,
                             window_start=new_start,window_end=new_end,snapshot=job['target'])
-        job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(feed,)).fetchone()
+        job=store.db.execute('SELECT * FROM feed_jobs WHERE scope=?',(scope,)).fetchone()
     return job['target']

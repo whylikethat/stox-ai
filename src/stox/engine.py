@@ -77,12 +77,14 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
             covered=sum(summary.get(s)==session for s in expected_symbols)
             if expected_symbols and covered/len(expected_symbols)<cfg.min_core_coverage:
                 raise RuntimeError(f'FORECASTING BLOCKED: latest-session coverage {covered}/{len(expected_symbols)} is below the configured minimum')
-            if not store.checkpoint('actions'):
+            from .ingestion import action_scope
+            actions_checkpoint=store.checkpoint(action_scope(cfg,symbols)) or store.checkpoint('actions')
+            if not actions_checkpoint:
                 raise RuntimeError('FORECASTING BLOCKED: corporate-action feed has no successful checkpoint')
-            if pd.Timestamp(store.checkpoint('actions')) < cal.close(session):
+            if pd.Timestamp(actions_checkpoint) < cal.close(session):
                 raise RuntimeError('FORECASTING BLOCKED: corporate-action checkpoint is stale')
             with progress.stage('features',total=len(symbols)):
-                features,errors=build_features(store,symbols,cal,cal.close(session).isoformat(),cfg.max_training_rows,progress=progress)
+                features,errors=build_features(store,symbols,cal,cal.close(session).isoformat(),cfg.max_training_rows,progress=progress,cfg=cfg)
                 warnings.extend(f'{s}: {reason}' for s,reason in errors.items())
             with progress.stage('labels-and-settlement'):
                 labels=make_labels(features,store,cal,cfg.horizons,cfg.friction_bps,progress=progress)
@@ -101,12 +103,14 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                 from .features import enrich
                 current=features.sort_values('session').groupby('symbol').tail(1).copy()
                 current['issue_at']=started
-                current=enrich(current,store)
+                current=enrich(current,store,cfg)
                 rows=forecast_rows(current,assets,models,cfg,session)
                 health={r['provider']:r['status'] for r in store.db.execute('SELECT * FROM health')}
+                from .features import FAMILIES
                 for row in rows:
-                    for family,provider in (('news','news'),('fundamentals','sec'),('macro','fred')):
-                        if family in row['feature_families'] and health.get(provider)!='PASS' and not synthetic:
+                    selected=set(models[row['horizon']].columns)
+                    for family,provider,columns in (('news','news',['news_count','news_negative']),('SEC','sec',['filing_count']+FAMILIES['fundamentals']),('macro','fred',FAMILIES['macro'])):
+                        if selected.intersection(columns) and health.get(provider)!='PASS' and not synthetic:
                             row['qualified']=False
                             row['exclusions'].append('Selected '+family+' source is degraded')
                     if row['exclusions'] and row['quality_label']=='High Confidence / Lower Return':
@@ -118,7 +122,7 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                 holdings=review(store,rows,rid)
                 highlights={r['symbol'] for r in primary[:3]+across[:3]}|{h['symbol'] for h in holdings if h['status']!='HEALTHY'}
                 for holding in holdings:
-                    holding['evidence']=evidence(store,holding['symbol'],started)
+                    holding['evidence']=evidence(store,holding['symbol'],started,cfg)
                 details=[]
                 with threadpool_limits(limits=cfg.threads):
                     for symbol in sorted(highlights|{r['symbol'] for r in primary+across}):
@@ -127,15 +131,15 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                         if not fr.empty and symbol in highlights:
                             for r in forecasts:
                                 r['explanations']=models[r['horizon']].explain(fr.iloc[0].to_dict())
-                        details.append({'symbol':symbol,'forecasts':forecasts,'evidence':evidence(store,symbol,started)})
+                        details.append({'symbol':symbol,'forecasts':forecasts,'evidence':evidence(store,symbol,started,cfg)})
                 if any(not m.metadata['validated'] for m in models.values()):
                     warnings.append('One or more research models have not passed qualification; unvalidated horizons cannot issue official recommendations')
                 warnings.append('Historical universe reconstruction is approximate; historical asset metadata and revisions are incomplete before first local observation')
                 cleanup_models(store)
-                metadata={'version':__version__,'git_commit':git_commit(),'run_started':started,
+                metadata={'enrichment_profile':{k:getattr(cfg,k) for k in ('enable_news','news_lookback_days','enable_sec','enable_fred','enable_alpha_vantage')},'version':__version__,'git_commit':git_commit(),'run_started':started,
                           'market_session':session,'market_cutoff':cal.close(session).isoformat(),'event_cutoff':started,
                           'news_checkpoint':store.checkpoint('news'),'sec_checkpoint':store.checkpoint('sec'),'macro_checkpoint':store.checkpoint('fred'),
-                          'model_ids':{str(h):m.model_id for h,m in models.items()},'feature_version':'causal-v2',
+                          'model_ids':{str(h):m.model_id for h,m in models.items()},'model_feature_columns':{str(h):m.columns for h,m in models.items()},'feature_version':'causal-v2',
                           'data_digest':digest([(s,store.checkpoint('bars:'+s)) for s in symbols]),'universe_digest':digest(assets),'universe_diagnostics':master.persist_diagnostics(cfg,session),
                           'friction_bps':cfg.friction_bps,'provider_health':[dict(r) for r in store.db.execute('SELECT * FROM health')],
                           'run_mode':'synthetic' if synthetic else 'offline' if offline else 'live',
