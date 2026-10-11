@@ -25,6 +25,7 @@ class Config:
     enable_sec: bool = True
     enable_fred: bool = True
     enable_alpha_vantage: bool = True
+    earnings_symbols_per_run: int = 3
     friction_bps: float = 20
     min_price: float = 5
     min_dollar_volume: float = 20_000_000
@@ -40,6 +41,7 @@ class Config:
     event_refresh_minutes: int = 15
     retrain_days: int = 30
     min_new_labels: int = 500
+    challenger_max_rows: int = 60000
     max_training_rows: int = 250_000
     min_validation_blocks: int = 8
     min_bucket_samples: int = 100
@@ -78,6 +80,8 @@ class Config:
                 raise ValueError(f'{key} must be a boolean')
         if not 1 <= cfg.disclosure_documents_per_run <= 100 or not 1 <= cfg.disclosure_lookback_days <= 365:
             raise ValueError('Disclosure limits: 1–100 documents/run and 1–365 days lookback')
+        if not 0 <= cfg.earnings_symbols_per_run <= 10 or not 1000 <= cfg.challenger_max_rows <= 250000:
+            raise ValueError('Earnings limit must be 0–10 and challenger rows 1000–250000')
         if not cfg.model_algorithms or not set(cfg.model_algorithms)<= {'logistic','histogram','extra_trees'}:
             raise ValueError('Unsupported model_algorithms')
         if type(cfg.news_lookback_days) is not int or cfg.news_lookback_days < 1:

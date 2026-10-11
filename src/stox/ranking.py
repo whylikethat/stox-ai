@@ -40,12 +40,12 @@ def forecast_rows(features, assets, models, cfg, expected_session):
                 threshold=model.metadata['threshold']
                 if threshold is None or p[i,3] < threshold:
                     reasons.append('below validated qualification threshold')
-                for family,provider in (('news','news'),('fundamentals','sec'),('macro','fred')):
-                    if family in model.metadata['family']:
-                        # Never substitute imputed defaults for an unavailable selected feature family silently.
-                        columns=__import__('stox.features',fromlist=['FAMILIES']).FAMILIES[family]
-                        if not any(np.isfinite(row.get(c,np.nan)) for c in columns):
-                            reasons.append('selected '+family+' feature family is unavailable')
+                from .features import FAMILIES
+                for family in model.metadata['family'].split('+'):
+                    if family=='price':continue
+                    columns=FAMILIES.get(family,[])
+                    if columns and not any(np.isfinite(row.get(c,np.nan)) for c in columns):
+                        reasons.append('selected '+family+' feature family is unavailable')
                 if expected[i]<=0:
                     reasons.append('non-positive expected net return')
                 if 1-p[i,0]>cfg.max_tail_probability:

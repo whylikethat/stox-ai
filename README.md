@@ -1,3 +1,7 @@
+# STOX-AI 2.3 forward evaluation
+
+Frozen challenger trials, bounded earnings history, sector ETF proxies and compact model/data diagnostics. See [final product operations](docs/FINAL_PRODUCT.md). Existing data is upgraded non-destructively.
+
 # STOX-AI 2.2 — probability-first weekly research
 
 See [Weekly upgrade](docs/WEEKLY_UPGRADE.md) for the preserved-table HTML cleanup, prior-run comparisons, feature challengers and validation limitations. Existing models and runtime data are retained.

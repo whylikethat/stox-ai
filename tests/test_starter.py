@@ -202,7 +202,7 @@ def test_incompatible_champion_is_not_reused(cfg,store,monkeypatch):
     disable(cfg);cfg.horizons=(30,)
     store.db.execute('INSERT INTO models VALUES(?,?,?,?,?,?)',('old',30,STAMP,'champion','models/old.joblib','{}'))
     store.db.commit()
-    old=SimpleNamespace(columns=['momentum_20','news_count'],metadata={'holdout_end':'2024-01-01'})
+    old=SimpleNamespace(columns=['momentum_20','news_count'],metadata={'holdout_end':'2024-01-01','model_design_version':4})
     monkeypatch.setattr(module.joblib,'load',lambda *a:old)
     attempted=[]
     def train(*a):
@@ -224,7 +224,7 @@ def test_fred_failure_allows_existing_price_model(cfg,store,calendar,monkeypatch
     warnings=[];Ingestor(cfg,store,calendar,Paged(calendar,0)).optional([],STAMP,warnings)
     assert any('FRED unavailable' in w for w in warnings)
     store.db.execute('INSERT INTO models VALUES(?,?,?,?,?,?)',('old',30,STAMP,'champion','models/old.joblib','{}'));store.db.commit()
-    old=SimpleNamespace(columns=['momentum_20'],metadata={'holdout_end':'2024-01-01'})
+    old=SimpleNamespace(columns=['momentum_20'],metadata={'holdout_end':'2024-01-01','model_design_version':4})
     monkeypatch.setattr(models.joblib,'load',lambda *a:old)
     monkeypatch.setattr(models,'train_horizon',lambda *a:pytest.fail('Compatible price champion should be reused'))
     labels=pd.DataFrame({'horizon':[30],'label_end':['2025-01-01'],'momentum_20':[.1]})

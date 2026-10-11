@@ -19,6 +19,12 @@ def action_scope(cfg, symbols):
     return 'actions:'+digest([sorted(symbols),cfg.history_start])[:24] if cfg.symbols else 'actions'
 
 
+def sec_refresh_symbols(symbols, mapping, store, limit):
+    # Unsupported assets must not consume the bounded issuer refresh budget.
+    return sorted((s for s in symbols if s in mapping),
+                  key=lambda s: (store.checkpoint('sec:'+str(mapping[s])) or '', s))[:limit]
+
+
 class Ingestor:
     def __init__(self, cfg, store, calendar, alpaca=None, progress=None):
         self.cfg,self.store,self.calendar = cfg,store,calendar
@@ -240,6 +246,7 @@ class Ingestor:
         warnings.append(message)
 
     def optional(self, symbols, stamp, warnings):
+        all_symbols=list(symbols)
         if not self.cfg.enable_sec:
             with self.progress.stage('sec'):
                 self.disabled('sec',warnings)
@@ -252,7 +259,7 @@ class Ingestor:
                     self.store.advance('sec:target',sec_target)
                     master=SecurityMaster(self.store)
                     # Least recently refreshed first; bounded work on every invocation.
-                    symbols=sorted(symbols,key=lambda s:(self.store.checkpoint('sec:'+str(mapping.get(s,''))) or '',s))[:self.cfg.sec_symbols_per_run]
+                    symbols=sec_refresh_symbols(symbols,mapping,self.store,self.cfg.sec_symbols_per_run)
                     for index,symbol in enumerate(symbols):
                         if symbol not in mapping: continue
                         cik = mapping[symbol]
@@ -331,6 +338,8 @@ class Ingestor:
                                 self.store.record('earnings',row['symbol']+':'+row['reportDate'],row,now_iso())
                             self.store.advance('alpha',stamp)
                     self.store.health('alpha','PASS','Earnings enrichment updated or cached')
+                    from .earnings import ingest_earnings
+                    ingest_earnings(self.cfg,self.store,all_symbols,stamp)
                 except Exception as exc:
                     self.progress.update(errors=1)
                     warnings.append(f'Optional earnings enrichment unavailable: {exc}')

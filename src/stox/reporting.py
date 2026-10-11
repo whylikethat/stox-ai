@@ -47,6 +47,8 @@ def terminal(report):
     for horizon,rows in report.get('by_horizon',{}).items():
         lines.append('\n'+horizon+'D RESEARCH — TOP 20\n'+table(rows[:20]))
     lines.append('\nSTRICT VALIDATED OPPORTUNITIES: '+(', '.join(r['symbol']+' '+str(r['horizon'])+'D' for r in report.get('qualified_across_horizons',[])) or 'none'))
+    for t in report.get('model_progress',[]):
+        d=t['diagnostics'];lines.append(f"MODEL TRIAL {t['horizon']}D: {t['status']}; samples={d.get('samples',0)}, blocks={d.get('blocks',0)}; {d.get('reason','')}")
     lines.append('\nPER-HORIZON VALIDATION\n'+json.dumps(report.get('validation',{}),indent=2))
     lines.extend('NOTICE: '+w for w in human_warnings(report))
     return '\n'.join(lines)
@@ -91,6 +93,7 @@ def markdown(report,review=False):
     sections.append('## Strict validated opportunities\n\n'+table(report.get('qualified_across_horizons',[])))
     sections.append('## Per-horizon validation diagnostics\n\n```json\n'+json.dumps(report.get('validation',{}),indent=2)+'\n```')
     sections.append('## All research predictions\n\n```json\n'+json.dumps(report.get('research_candidates',[]),indent=2)+'\n```')
+    sections.append('## Model improvement progress\n\n'+progress_table(report))
     sections.append('## Prospective performance\n\n```json\n'+json.dumps(report['prospective'],indent=2)+'\n```')
     sections.append('## Backtest evidence — separate from prospective history\n\n```json\n'+json.dumps(report['backtests'],indent=2)+'\n```')
     sections.append('Probabilities are estimates. Feature contributions describe model associations, not proven economic causes. All returns are USD net total returns under disclosed friction assumptions. This application neither executes trades nor allocates capital.')
@@ -110,7 +113,7 @@ def html_report(report,md):
     performance=performance_table(report)
     changes=changes_table(report.get('changes',{}))
     return '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><title>STOX-AI · Investment Research</title><style>
-    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101923;color:#eaf0f5;font:16px/1.6 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:40px 24px}header{border-bottom:1px solid #344251;padding-bottom:24px}h1{font-size:42px;margin:4px 0}h2{margin-top:36px;font-size:23px}.eyebrow{color:#78d9c2;letter-spacing:3px;font-size:12px}section,details{background:#182532;border:1px solid #344251;border-radius:12px;padding:20px;margin-top:18px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #344251;white-space:nowrap}th{color:#b2c0ce;font-size:12px;text-transform:uppercase}.scroll{overflow:auto}.empty{color:#eed399}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#c5d3e0}.warning{border-color:#887349}summary{cursor:pointer;font-weight:600}footer{margin-top:32px;color:#acbac7;font-size:13px}</style><main><header><div class="eyebrow">STOX-AI / LOCAL INVESTMENT RESEARCH</div><h1>Evidence before conviction.</h1><p>20D · 30D primary · 60D · 90D — calendar-day horizons</p></header>'''+ ('<section class="warning"><b>SYNTHETIC DEMONSTRATION</b><p>Not investment evidence.</p></section>' if report.get('synthetic') else '') + summary+'<section class="warning"><h2>Data and model status</h2><ul>'+warnings+'</ul></section><h2>Primary 30D</h2>'+leaderboard(report['primary_30d'])+'<h2>Best Across All Horizons</h2>'+leaderboard(report['across_horizons'])+changes+horizon_tables+'<h2>Top 3 research highlights</h2>'+leaderboard(report['primary_30d'][:3])+'<h2>Strict validated opportunities</h2>'+leaderboard(report.get('qualified_across_horizons',[]))+validation+performance+'<footer>Delayed public disclosures are context, not recommendations. Full evidence, reasons and audit details are in report.json (latest.json). Current-universe history has survivorship limitations. No automatic trading or position sizing. No forecast is a guarantee.</footer></main></html>'
+    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101923;color:#eaf0f5;font:16px/1.6 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:40px 24px}header{border-bottom:1px solid #344251;padding-bottom:24px}h1{font-size:42px;margin:4px 0}h2{margin-top:36px;font-size:23px}.eyebrow{color:#78d9c2;letter-spacing:3px;font-size:12px}section,details{background:#182532;border:1px solid #344251;border-radius:12px;padding:20px;margin-top:18px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #344251;white-space:nowrap}th{color:#b2c0ce;font-size:12px;text-transform:uppercase}.scroll{overflow:auto}.empty{color:#eed399}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#c5d3e0}.warning{border-color:#887349}summary{cursor:pointer;font-weight:600}footer{margin-top:32px;color:#acbac7;font-size:13px}</style><main><header><div class="eyebrow">STOX-AI / LOCAL INVESTMENT RESEARCH</div><h1>Evidence before conviction.</h1><p>20D · 30D primary · 60D · 90D — calendar-day horizons</p></header>'''+ ('<section class="warning"><b>SYNTHETIC DEMONSTRATION</b><p>Not investment evidence.</p></section>' if report.get('synthetic') else '') + summary+'<section class="warning"><h2>Data and model status</h2><ul>'+warnings+'</ul></section><h2>Primary 30D</h2>'+leaderboard(report['primary_30d'])+'<h2>Best Across All Horizons</h2>'+leaderboard(report['across_horizons'])+changes+horizon_tables+'<h2>Top 3 research highlights</h2>'+leaderboard(report['primary_30d'][:3])+'<h2>Strict validated opportunities</h2>'+leaderboard(report.get('qualified_across_horizons',[]))+validation+performance+progress_table(report)+'<footer>Delayed public disclosures are context, not recommendations. Full evidence, reasons and audit details are in report.json (latest.json). Current-universe history has survivorship limitations. No automatic trading or position sizing. No forecast is a guarantee.</footer></main></html>'
 
 
 def write_reports(root,report):
@@ -293,3 +296,25 @@ def index_evidence(snapshots):
             else: symbols={row.get('symbol')}
             for symbol in symbols-{None,''}: by_symbol[symbol].append(row)
     return {**snapshots,'_by_symbol':index}
+
+
+def progress_table(report):
+    rows=[]
+    for trial in report.get('model_progress',[]):
+        d=trial['diagnostics'];p=trial['policy']
+        rows.append([str(trial['horizon'])+'D',trial['status'],str(d.get('samples',0))+'/'+str(p['samples']),str(d.get('blocks',0))+'/'+str(p['blocks']),d.get('reason','')])
+    out='<h2>Model improvement progress</h2>'
+    out+=small_table(['Horizon','Frozen trial','Mature samples','Independent blocks','Decision / next step'],rows) if rows else '<p>No active forward challenger yet. Evaluation follows the configured cadence and matured-label requirements.</p>'
+    out+='<p>Forward trials compare frozen models on new outcomes. Promotion does not waive qualification. Independent evidence can take many months or longer.</p>'
+    audit=report.get('data_audit',{})
+    if audit:
+        rows=[[k.replace('_',' ').title(),v] for k,v in audit.items() if k not in ('feature_coverage','limits')]
+        out+='<h2>Data quality audit</h2>'+small_table(['Check','Result'],rows)
+        out+='<h3>Historical feature coverage</h3>'+small_table(['Family','Nonmissing coverage'],[[k,percent(v)] for k,v in audit['feature_coverage'].items()])
+    cohort_rows=[]
+    for cohort in ('research_only','qualified'):
+        for h,v in report.get('prospective',{}).get(cohort,{}).get('horizons',{}).items():
+            for k in (3,20):
+                cohort_rows.append([cohort,h+'D','Top '+str(k),percent(v.get(f'top{k}_hit_rate')),percent(v.get(f'top{k}_mean_net')),percent(v.get(f'top{k}_loss_10')),v.get(f'top{k}_nonoverlap_cohorts',0),percent(v.get(f'top{k}_nonoverlap_max_drawdown'))])
+    if cohort_rows:out+='<h2>Prospective ranked outcomes after costs</h2>'+small_table(['Cohort','Horizon','Selection','Win rate','Mean net','Loss >10%','Independent cohorts','Max drawdown'],cohort_rows)
+    return out

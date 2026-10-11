@@ -105,6 +105,10 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                     for family,provider in (('news','news'),('fundamentals','sec'),('macro','fred')):
                         if health.get(provider) not in ('PASS',):
                             labels[FAMILIES[family]]=float('nan')
+                from .trials import settle_trials,assess
+                if not offline and not synthetic:
+                    settle_trials(store,cal,started)
+                    assess(store,cfg,started)
                 models=registry_train(labels,cfg,store,force_train,started,progress=progress)
             if set(models)!=set(cfg.horizons):
                 raise RuntimeError('FORECASTING BLOCKED: all active horizons need trained models; inspect stox status')
@@ -115,11 +119,13 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                 current['issue_at']=started
                 current=enrich(current,store,cfg)
                 rows=forecast_rows(current,assets,models,cfg,session)
+                horizon_ranks={(r['symbol'],h):r['rank'] for h in cfg.horizons for r in rank([r for r in rows if r['horizon']==h])}
+                for row in rows:row['horizon_rank']=horizon_ranks[(row['symbol'],row['horizon'])]
                 health={r['provider']:r['status'] for r in store.db.execute('SELECT * FROM health')}
                 from .features import FAMILIES
                 for row in rows:
                     selected=set(models[row['horizon']].columns)
-                    for family,provider,columns in (('news','news',FAMILIES['news']),('SEC','sec',FAMILIES['filings']+FAMILIES['fundamentals']),('macro','fred',FAMILIES['macro']),('earnings','alpha',FAMILIES['earnings']),('analyst','analyst',FAMILIES['analyst']),('options','options',FAMILIES['options'])):
+                    for family,provider,columns in (('news','news',FAMILIES['news']),('SEC','sec',FAMILIES['filings']+FAMILIES['fundamentals']),('macro','fred',FAMILIES['macro']),('earnings','alpha',FAMILIES['earnings']),('earnings history','earnings-history',FAMILIES['earnings']),('analyst','analyst',FAMILIES['analyst']),('options','options',FAMILIES['options'])):
                         if selected.intersection(columns) and health.get(provider)!='PASS' and not synthetic:
                             row['qualified']=False
                             row['exclusions'].append('Selected '+family+' source is degraded')
@@ -174,6 +180,9 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                     ids=[]
                 else:
                     ids=issue(store,cal,rows,issued,metadata)
+                    if not synthetic:
+                        from .trials import issue_trials
+                        issue_trials(store,current[current.session==session],models,cfg,cal,issued)
                 created=store.db.execute('SELECT count(*) FROM forecasts').fetchone()[0]-before
                 if ids and not created:
                     warnings.append('Existing research snapshot reused; no duplicate forecasts created')
@@ -182,7 +191,9 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                     warnings.append(f'{conflicts} forecasts have conflicting probability/return estimates; ranked conservatively and never qualified')
                 from .models import validation_diagnostics
                 qualified_ids=[fid for fid,symbol in zip(ids,sorted({r['symbol'] for r in rows})) if any(r['qualified'] for r in rows if r['symbol']==symbol)]
-                report={'run_id':rid,'synthetic':synthetic,'metadata':metadata,'warnings':warnings,'primary_30d':primary,
+                from .trials import summary as trial_summary
+                from .audit import data_audit
+                report={'model_progress':trial_summary(store),'data_audit':data_audit(features,rows,cfg),'run_id':rid,'synthetic':synthetic,'metadata':metadata,'warnings':warnings,'primary_30d':primary,
                         'across_horizons':across,'details':details,'research_candidates':rows,'holdings':holdings,
                         'prospective':performance(store),'backtests':{str(h):m.metadata['evaluation'] for h,m in models.items()},
                         'research_forecast_ids':ids,'new_forecast_count':created,
@@ -214,7 +225,7 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
 
 def cleanup_models(store):
     """Bound unreferenced artifacts; keep registry/audit metadata and every issued model."""
-    referenced=set()
+    referenced={r[0] for r in store.db.execute("SELECT candidate FROM model_trials WHERE status='collecting' UNION SELECT incumbent FROM model_trials WHERE status='collecting'")}
     for r in store.db.execute('SELECT payload FROM forecasts'):
         referenced.update(p['model_id'] for p in json.loads(r[0])['forecasts'] if p.get('model_id'))
     for h in [r[0] for r in store.db.execute('SELECT DISTINCT horizon FROM models')]:

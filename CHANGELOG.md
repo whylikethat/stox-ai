@@ -1,3 +1,10 @@
+## 2.3.0
+
+- Replace unusable historical promotion windows with frozen paired forward trials, fixed evaluation policy, immutable entry/outcome records and explicit progress.
+- Add bounded quarterly earnings history, causal sector ETF affinity, accession-matched cash flow/margins/share trends, and licensed analyst/options export imports.
+- Add current data-quality/coverage diagnostics and per-horizon prospective Top 3/20 outcomes after costs.
+- Preserve strict qualification, legacy models, user settings and all historical records through additive schema 5 migration.
+
 ## 2.2.0
 
 - Rank research by probability and downside risk before expected return; retain strict qualification and consistency categories.

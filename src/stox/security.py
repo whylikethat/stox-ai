@@ -162,7 +162,7 @@ class SecurityMaster:
     def requests(self,cfg, discovery=False):
         with self.store.transaction():
             self.db.execute("UPDATE health SET status='INACTIVE' WHERE provider LIKE 'security-request:%'")
-        requested=set(cfg.symbols)|{'SPY','QQQ'}|{r[0] for r in self.db.execute('SELECT symbol FROM holdings WHERE active=1')}|{r[0] for r in self.db.execute('SELECT symbol FROM watchlist')}
+        requested=set(cfg.symbols)|({'SPY','QQQ'}|set(__import__('stox.features',fromlist=['SECTOR_ETFS']).SECTOR_ETFS) if cfg.autonomous_universe else {'SPY','QQQ'})|{r[0] for r in self.db.execute('SELECT symbol FROM holdings WHERE active=1')}|{r[0] for r in self.db.execute('SELECT symbol FROM watchlist')}
         if not cfg.symbols:
             selected=self.db.execute("SELECT value FROM runtime_meta WHERE key='modeling_universe'").fetchone()
             if selected and not discovery:

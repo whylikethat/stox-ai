@@ -282,7 +282,7 @@ def train_horizon(frame,horizon,cfg):
     threshold=min((b['bucket']/10 for b in buckets),default=None)
     valid=evaluation['ece']<=cfg.max_calibration_error and evaluation['brier']<=evaluation['base_brier'] and evaluation['blocks']>=cfg.min_validation_blocks
     champion.metadata={'feature_columns':chosen['columns'],'available_feature_families':[name for name,cols in FAMILIES.items() if development[[c for c in cols if c in development]].notna().any().any()],'horizon':horizon,'algorithm':chosen['algorithm'],'family':chosen['family'],
-                       'distribution':chosen['distribution'],'distribution_bin_counts':champion.bin_support_counts,'model_design_version':3,'promotion_start':promotion_start,
+                       'distribution':chosen['distribution'],'distribution_bin_counts':champion.bin_support_counts,'model_design_version':4,'promotion_start':promotion_start,
                        'family_decisions':{name:('selected' if ('price' if name=='price' else 'price+'+name)==chosen['family'] else 'evaluated; not selected' if any(f==('price' if name=='price' else 'price+'+name) for f,c in families) else 'insufficient point-in-time development coverage') for name in FAMILIES},
                        'family_coverage':{name:{c:float(development[c].notna().mean()) if c in development else 0. for c in cols} for name,cols in FAMILIES.items()},
                        'holdout_start':holdout_start,'holdout_end':str(holdout.session.max()),
@@ -332,36 +332,31 @@ def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
             if old and not labels.empty and any(c not in labels or not labels[c].notna().any() for c in old.columns if c not in FAMILIES['price']):
                 # Never reuse an enrichment-dependent champion after its inputs are disabled.
                 old=None
-            new_count=int(((labels.horizon==horizon)&(labels.label_end>(old.metadata['holdout_end'] if old else '1900-01-01'))).sum()) if not labels.empty else 0
+            evaluated_at=store.checkpoint('evaluation:'+str(horizon)) or (existing['created_at'] if existing else '1900-01-01T00:00:00Z')
+            availability='label_available_at' if 'label_available_at' in labels else 'label_end'
+            new_count=int(((labels.horizon==horizon)&(pd.to_datetime(labels[availability],utc=True)>pd.Timestamp(evaluated_at))).sum()) if not labels.empty else 0
             age=(pd.Timestamp(stamp)-pd.Timestamp(existing['created_at'])).days if existing else 10**6
-            if old and not force and (age<cfg.retrain_days or new_count<cfg.min_new_labels):
+            from .trials import active,register
+            trial=active(store,horizon)
+            attempt=store.checkpoint('evaluation:'+str(horizon))
+            initial_upgrade=old is not None and old.metadata.get('model_design_version',0)<4 and not attempt
+            due=not attempt or (pd.Timestamp(stamp)-pd.Timestamp(attempt)).days>=cfg.retrain_days
+            if old and (trial or (not force and not initial_upgrade and (not due or (age<cfg.retrain_days and old.metadata.get('model_design_version',0)>=4) or new_count<cfg.min_new_labels))):
                 results[horizon]=old
                 continue
             try:
-                candidate,holdout=train_horizon(labels,horizon,cfg)
+                from dataclasses import replace
+                evaluation_cfg=replace(cfg,max_training_rows=min(cfg.max_training_rows,cfg.challenger_max_rows)) if old else cfg
+                candidate,holdout=train_horizon(labels,horizon,evaluation_cfg)
             except ValueError as exc:
+                store.advance('evaluation:'+str(horizon),stamp)
                 store.health(f'model:{horizon}','WARN',str(exc))
                 if old:
                     results[horizon]=old
                 continue
             promote=old is None
-            if old is not None:
-                # Evaluate both only on outcomes that neither fitted estimator/calibrator has seen.
-                boundary=max(old.calibration_through,candidate.calibration_through,old.metadata.get('holdout_end',old.calibration_through))
-                comparison=candidate.promotion_frame
-                comparison=comparison[pd.to_datetime(comparison.session)>pd.Timestamp(boundary)+pd.Timedelta(days=5)]
-                if len(comparison)>=cfg.min_bucket_samples and len(set(independent_blocks(comparison,horizon)))>=cfg.min_validation_blocks:
-                    op=old.predict(comparison)[0][:,3]
-                    cp=candidate.predict(comparison)[0][:,3]
-                    y=(comparison.target.to_numpy()>0).astype(int)
-                    differences=(op-y)**2-(cp-y)**2
-                    blocks=independent_blocks(comparison,horizon)
-                    b=pd.Series(differences).groupby(blocks).mean()
-                    improvement=float(b.mean()-1.96*b.std(ddof=1)/np.sqrt(len(b)))
-                    om=metrics(comparison,op,old.predict(comparison)[1],horizon)
-                    cm=metrics(comparison,cp,candidate.predict(comparison)[1],horizon)
-                    promote=improvement>0 and cm['ece']<=om['ece'] and cm['return_mae']<=om['return_mae']*1.05
-                    candidate.metadata['promotion_lower_improvement']=improvement
+            # Existing champions are compared using frozen live paired predictions.
+            # Historical backtests never repeatedly decide incumbent replacement.
             del candidate.promotion_frame
             mid=digest(candidate.metadata)[:24]
             candidate.model_id=mid
@@ -374,11 +369,13 @@ def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
             fd=os.open(store.root/'models',os.O_DIRECTORY)
             try: os.fsync(fd)
             finally: os.close(fd)
-            with store.db:
+            with store.transaction():
                 if promote:
                     store.db.execute("UPDATE models SET status='retired' WHERE horizon=? AND status='champion'",(horizon,))
                 store.db.execute('INSERT INTO models VALUES(?,?,?,?,?,?)',(mid,horizon,stamp,'champion' if promote else 'challenger',str(rel),encode(candidate.metadata)))
                 store.db.execute('INSERT INTO evaluations VALUES(?,?,?)',(mid,'backtest',encode(candidate.metadata['evaluation'])))
+                if old is not None: register(store,mid,old.model_id,horizon,stamp,cfg)
+                store.advance('evaluation:'+str(horizon),stamp)
             results[horizon]=candidate if promote else old
             store.health(f'model:{horizon}','PASS' if results[horizon].metadata['validated'] else 'WARN','Validated champion' if results[horizon].metadata['validated'] else 'Research model; recommendation qualification has not passed')
     if progress: progress.update(processed=len(cfg.horizons))
@@ -400,7 +397,12 @@ def needs_training_labels(cfg,store,features,stamp,force=False):
         if row is None: return True
         meta=json.loads(row['metadata'])
         if cfg.history_start<meta.get('history_start',cfg.history_start): return True
-        if (pd.Timestamp(stamp)-pd.Timestamp(row['created_at'])).days>=cfg.retrain_days: return True
         for column in meta.get('feature_columns',[]):
             if column not in features or not features[column].notna().any(): return True
+        from .trials import active
+        if active(store,horizon): continue
+        attempt=store.checkpoint('evaluation:'+str(horizon))
+        if attempt and (pd.Timestamp(stamp)-pd.Timestamp(attempt)).days<cfg.retrain_days: continue
+        if meta.get('model_design_version',0)<4 and not attempt: return True
+        if (pd.Timestamp(stamp)-pd.Timestamp(row['created_at'])).days>=cfg.retrain_days: return True
     return False

@@ -89,7 +89,7 @@ def select_universe(ingestor, master, references, session, end, stamp):
         if reasons: exclusions[ref.ticker]=reasons
         else: candidates.append(ref)
     candidates.sort(key=lambda r:(-summaries[r.ticker]['dollar_volume'],r.ticker))
-    mandatory={'SPY','QQQ'}|set(cfg.symbols)|{r[0] for r in store.db.execute('SELECT symbol FROM holdings WHERE active=1')}|{r[0] for r in store.db.execute('SELECT symbol FROM watchlist')}
+    mandatory=({'SPY','QQQ'}|set(__import__('stox.features',fromlist=['SECTOR_ETFS']).SECTOR_ETFS) if cfg.autonomous_universe else {'SPY','QQQ'})|set(cfg.symbols)|{r[0] for r in store.db.execute('SELECT symbol FROM holdings WHERE active=1')}|{r[0] for r in store.db.execute('SELECT symbol FROM watchlist')}
     selected={r.ticker:r for r in candidates[:cfg.universe_size]}
     for ref in references:
         if ref.ticker in mandatory:

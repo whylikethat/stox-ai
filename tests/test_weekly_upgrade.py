@@ -132,7 +132,7 @@ def test_inference_skips_labels_only_with_compatible_recent_champions(cfg,store)
     assert needs_training_labels(cfg,store,frame,'2026-10-11T00:00:00Z')
     for h in cfg.horizons:
         with store.transaction():
-            store.db.execute('INSERT INTO models VALUES(?,?,?,?,?,?)',(str(h),h,'2026-10-10T00:00:00Z','champion','unused.joblib',encode({'history_start':cfg.history_start,'feature_columns':['momentum_20']})))
+            store.db.execute('INSERT INTO models VALUES(?,?,?,?,?,?)',(str(h),h,'2026-10-10T00:00:00Z','champion','unused.joblib',encode({'model_design_version':4,'history_start':cfg.history_start,'feature_columns':['momentum_20']})))
     assert not needs_training_labels(cfg,store,frame,'2026-10-11T00:00:00Z')
     assert needs_training_labels(cfg,store,frame,'2026-11-20T00:00:00Z')
     assert needs_training_labels(cfg,store,frame,'2026-10-11T00:00:00Z',force=True)

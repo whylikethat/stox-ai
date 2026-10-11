@@ -9,16 +9,18 @@ from .security import SecurityMaster
 
 BASE_FEATURES = ['momentum_5','momentum_20','momentum_60','momentum_120','trend_50','trend_200','volatility','downside_vol','drawdown','volume_ratio','log_liquidity','gap','market_relative','beta','cross_rank']
 ADVANCED_PRICE = ['momentum_10','momentum_40','momentum_acceleration','trend_20','trend_100','slope_50','slope_200','volatility_change','return_skew','tail_frequency','volume_acceleration','liquidity_stability','gap_mean']
+SECTOR_ETFS = ('XLB','XLC','XLE','XLF','XLI','XLK','XLP','XLRE','XLU','XLV','XLY')
+SECTOR_FEATURES = ['sector_proxy_relative','sector_proxy_momentum','sector_proxy_correlation']
 MARKET_FEATURES = ['qqq_relative','iwm_relative','beta_adjusted_momentum','market_breadth_50','market_breadth_200','market_volatility','risk_on_off']
-FAMILIES = {'price':BASE_FEATURES,'price_advanced':ADVANCED_PRICE,'market':MARKET_FEATURES,
+FAMILIES = {'price':BASE_FEATURES,'price_advanced':ADVANCED_PRICE,'market':MARKET_FEATURES,'sector_proxy':SECTOR_FEATURES,
  'news':['news_count','news_negative','news_count_1','news_count_3','news_count_7','news_abnormal','news_sentiment','news_regulatory','news_financing','news_earnings','news_ma'],
  'filings':['filing_count','filing_8k','filing_recency'],
  'macro':['macro_DGS10','macro_DGS2','macro_UNRATE','macro_CPIAUCSL','macro_BAMLC0A0CM','yield_curve'],
- 'fundamentals':['assets_log','leverage','profit_margin','revenue_growth'],
- 'earnings':['earnings_days_until'],
+ 'fundamentals':['assets_log','leverage','profit_margin','revenue_growth','operating_margin','cash_assets','free_cash_flow_assets','shares_growth'],
+ 'earnings':['earnings_days_until','earnings_surprise','earnings_days_since','earnings_positive_fraction'],
  'analyst':['analyst_eps_revision_30','analyst_sales_revision_30','analyst_revision_breadth'],
  'options':['options_iv30','options_iv60','options_iv90','options_skew','options_iv_rank']}
-FEATURE_VERSION='causal-v3'
+FEATURE_VERSION='causal-v4'
 
 NEGATIVE = ('bankruptcy','fraud','recall','lawsuit','downgrade','investigation','default','misses')
 
@@ -68,7 +70,7 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=
     reference=store.bars('SPY')
     benchmark=market_features(reference,by_symbol['SPY'],calendar).set_index('session') if not reference.empty else None
     extra_benchmarks={}
-    for ticker in ('QQQ','IWM'):
+    for ticker in ('QQQ','IWM')+SECTOR_ETFS:
         bb=store.bars(ticker)
         if not bb.empty:
             bb=bb[pd.to_datetime(bb.available_at,utc=True,format='mixed')<=pd.Timestamp(cutoff)]
@@ -116,6 +118,18 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=
             f['beta_adjusted_momentum']=f.momentum_20-f.beta*f.session.map(benchmark.momentum_20) if benchmark is not None else np.nan
             f['market_volatility']=f.session.map(benchmark.volatility) if benchmark is not None else np.nan
             f['risk_on_off']=f.session.map(extra_benchmarks['QQQ'].momentum_20)-f.session.map(benchmark.momentum_20) if benchmark is not None and 'QQQ' in extra_benchmarks else np.nan
+            # Trailing return affinity is a proxy, never asserted historical sector membership.
+            correlations={ticker:f.return_1.rolling(126,min_periods=100).corr(f.session.map(extra_benchmarks[ticker].return_1)) for ticker in SECTOR_ETFS if ticker in extra_benchmarks and ticker!=symbol}
+            for col in SECTOR_FEATURES: f[col]=np.nan
+            if correlations:
+                corr=pd.DataFrame(correlations)
+                best=corr.fillna(-2).idxmax(axis=1)
+                f['sector_proxy_correlation']=corr.max(axis=1)
+                for ticker in correlations:
+                    mask=(best==ticker)&(f.sector_proxy_correlation>.3)
+                    momentum=f.session.map(extra_benchmarks[ticker].momentum_20)
+                    f.loc[mask,'sector_proxy_momentum']=momentum[mask]
+                    f.loc[mask,'sector_proxy_relative']=f.loc[mask,'momentum_20']-momentum[mask]
             breadth.append(pd.DataFrame({'session':f.session,'market_breadth_50':np.where(f.trend_50.notna(),(f.trend_50>0).astype(float),np.nan),'market_breadth_200':np.where(f.trend_200.notna(),(f.trend_200>0).astype(float),np.nan)}))
             if stride>1 and symbol not in ('SPY','QQQ'):
                 mask=np.array([int(hashlib.sha256((symbol+day).encode()).hexdigest()[:12],16)%stride==0 for day in f.session])
@@ -154,10 +168,10 @@ def enrich(frame, store, cfg=None):
         for symbol in set(row.get('symbols',[])): news_by[symbol].append(row)
     for row in filings: filings_by[row.get('symbol')].append(row)
     for row in facts:
-        if row.get('namespace')=='us-gaap' and row.get('unit')=='USD': facts_by[row.get('symbol')].append(row)
-    for name in ADVANCED_PRICE+MARKET_FEATURES:
+        if row.get('namespace')=='us-gaap' and row.get('unit') in ('USD','shares'): facts_by[row.get('symbol')].append(row)
+    for name in ADVANCED_PRICE+MARKET_FEATURES+SECTOR_FEATURES:
         if name not in result: result[name]=np.nan
-    for name in sum([v for k,v in FAMILIES.items() if k not in ('price','price_advanced','market')],[]):
+    for name in sum([v for k,v in FAMILIES.items() if k not in ('price','price_advanced','market','sector_proxy')],[]):
         result[name] = np.nan
     for symbol, indices in result.groupby('symbol').groups.items():
         idx = list(indices)
@@ -233,8 +247,12 @@ def enrich(frame, store, cfg=None):
         if rows:
             result['macro_'+series] = asof_values(times,rows,'value',period='date')
     result['yield_curve']=result['macro_DGS10']-result['macro_DGS2']
+    from .fundamentals import enrich_fundamentals
+    result=enrich_fundamentals(result,facts)
     from .providers.optional_signals import enrich_optional
     result=enrich_optional(result,store,cfg)
+    from .earnings import enrich_earnings
+    result=enrich_earnings(result,store,cfg)
     return result
 
 def asof_values(times, rows, value, period='end'):

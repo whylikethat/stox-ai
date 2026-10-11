@@ -59,3 +59,8 @@ disclosure_lookback_days = 90
 model_algorithms = ["logistic", "histogram", "extra_trees"]
 enable_analyst_signals = false
 enable_options_signals = false
+
+# Optional earnings history shares the existing Alpha Vantage daily budget.
+earnings_symbols_per_run = 3
+# Bound each challenger evaluation; frozen forward trials do not retrain every run.
+challenger_max_rows = 60000

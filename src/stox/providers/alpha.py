@@ -8,6 +8,16 @@ class AlphaVantage:
         self.key,self.store,self.maximum = key,store,budget
         self.http = http or HTTP()
 
+    def history(self, symbol):
+        if not self.key or not self.store.budget('alphavantage',self.maximum):
+            raise ProviderError('Alpha Vantage unavailable or daily budget exhausted')
+        raw=self.http.get('https://www.alphavantage.co/query',params={'function':'EARNINGS','symbol':symbol,'apikey':self.key},interval=12.5)
+        if not isinstance(raw,dict) or not isinstance(raw.get('quarterlyEarnings'),list):
+            raise ProviderError('Alpha Vantage earnings history unavailable (quota, entitlement or schema)')
+        if raw.get('symbol')!=symbol:
+            raise ProviderError('Alpha Vantage earnings symbol mismatch')
+        return raw['quarterlyEarnings']
+
     def earnings(self):
         if not self.key:
             raise ProviderError('Alpha Vantage not configured')

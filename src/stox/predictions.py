@@ -109,14 +109,14 @@ def _performance(store, cohort):
             continue
         # Do not retain the repeated multi-horizon forecast/evidence payload per outcome.
         compact={k:r[k] for k in ('horizon','net_return','payload','issued_at','session')}
-        prediction={k:pred.get(k) for k in ('p_gain','primary_rank','expected_return')}
+        prediction={k:pred.get(k) for k in ('p_gain','primary_rank','horizon_rank','rank','expected_return')}
         groups.setdefault(r['horizon'],[]).append((compact,prediction))
     output={}
     for h,pairs in groups.items():
         y=np.array([r['net_return'] for r,p in pairs])
         p=np.array([p['p_gain'] for r,p in pairs])
-        first=[r['net_return'] for r,p in pairs if p.get('primary_rank')==1]
-        top3=[r['net_return'] for r,p in pairs if (p.get('primary_rank') or 999)<=3]
+        first=[r['net_return'] for r,p in pairs if (p.get('horizon_rank') or p.get('rank') or p.get('primary_rank'))==1]
+        top3=[r['net_return'] for r,p in pairs if (p.get('horizon_rank') or p.get('rank') or p.get('primary_rank') or 999)<=3]
         output[str(h)]={'n':len(y),'hit_rate':float((y>0).mean()),'brier':float(np.mean((p-(y>0))**2)),
                         'mean_return':float(y.mean()),'median_return':float(np.median(y)),'worst_loss':float(y.min()),
                         'top1_hit_rate':float(np.mean(np.array(first)>0)) if first else None,
@@ -134,11 +134,15 @@ def _performance(store, cohort):
         output[str(h)]['return_mae']=float(np.mean([abs(expected[i]-y[i]) for i in valid])) if valid else None
         output[str(h)]['mean_expected_return']=float(np.mean([expected[i] for i in valid])) if valid else None
         output[str(h)]['loss_frequency_5_10_20']={str(t):float(np.mean(y < -t)) for t in (.05,.10,.20)}
-        for k in (1,3):
+        for k in (1,3,20):
             cohorts={}
             for r,pred in pairs:
-                if (pred.get('primary_rank') or 999)<=k:
+                if (pred.get('horizon_rank') or pred.get('rank') or pred.get('primary_rank') or 999)<=k:
                     cohorts.setdefault(r['issued_at'],[]).append(r)
+            selected=[r['net_return'] for g in cohorts.values() for r in g]
+            output[str(h)][f'top{k}_hit_rate']=float(np.mean(np.array(selected)>0)) if selected else None
+            output[str(h)][f'top{k}_mean_net']=float(np.mean(selected)) if selected else None
+            output[str(h)][f'top{k}_loss_10']=float(np.mean(np.array(selected)<-.10)) if selected else None
             last_exit='0000-00-00'
             values=[]
             for stamp,group in sorted(cohorts.items()):

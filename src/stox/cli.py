@@ -36,6 +36,8 @@ def parser():
     a.add_argument('--publication-at')
     a.add_argument('--acceptance-at')
     a.add_argument('--amends',help='Official URL or accession corrected by this report, if known')
+    signals=sub.add_parser('import-signals',help='Import a licensed analyst/options JSON export; no provider purchase')
+    signals.add_argument('--file',required=True)
     sub.add_parser('status')
     sub.add_parser('paths',help='Show resolved installation/data paths without opening the database')
     s=sub.add_parser('compact',help='Explicit stopped-writer SQLite integrity check and compaction')
@@ -101,6 +103,16 @@ def dispatch(args,cfg):
         from .reporting import terminal
         print(terminal(report))
         print(f'Reports: {path}')
+    elif args.command=='import-signals':
+        from pathlib import Path
+        from .storage import Store
+        from .providers.optional_signals import import_signals
+        path=Path(args.file)
+        if path.stat().st_size>10_000_000:raise ValueError('Signal file exceeds 10 MB')
+        cfg.initialize();store=Store(cfg.root)
+        try:
+            with store.lock():print('Imported',import_signals(store,json.loads(path.read_text())),'new signals')
+        finally:store.close()
     elif args.command=='disclosures':
         from pathlib import Path
         from .storage import Store

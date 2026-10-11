@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pandas as pd
 
-SCHEMA = 4
+SCHEMA = 5
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -78,13 +78,19 @@ class Store:
         CREATE TABLE IF NOT EXISTS forecast_snapshot_members(signature TEXT REFERENCES forecast_snapshots(signature), symbol TEXT, forecast_id TEXT REFERENCES forecasts(id), PRIMARY KEY(signature,symbol));
         CREATE TABLE IF NOT EXISTS universe_screen(symbol TEXT PRIMARY KEY, asset_id TEXT NOT NULL, session TEXT NOT NULL, payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS watchlist(symbol TEXT PRIMARY KEY, added_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS model_trials(candidate TEXT PRIMARY KEY, incumbent TEXT NOT NULL, horizon INTEGER NOT NULL, started_at TEXT NOT NULL, status TEXT NOT NULL, policy TEXT NOT NULL, diagnostics TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS trial_forecasts(candidate TEXT, symbol TEXT, entry_session TEXT, target_session TEXT NOT NULL, issued_at TEXT NOT NULL, p REAL NOT NULL, expected REAL NOT NULL, incumbent_p REAL NOT NULL, incumbent_expected REAL NOT NULL, friction REAL NOT NULL, PRIMARY KEY(candidate,symbol,entry_session));
+        CREATE TABLE IF NOT EXISTS trial_entries(candidate TEXT, symbol TEXT, entry_session TEXT, price REAL NOT NULL CHECK(price>0), recorded_at TEXT NOT NULL, PRIMARY KEY(candidate,symbol,entry_session));
+        CREATE TABLE IF NOT EXISTS trial_outcomes(candidate TEXT, symbol TEXT, entry_session TEXT, target REAL NOT NULL, recorded_at TEXT NOT NULL, PRIMARY KEY(candidate,symbol,entry_session));
+        CREATE INDEX IF NOT EXISTS trial_pending ON trial_forecasts(target_session,symbol);
+
 
         '''
         for statement in statements.split(';'):
             if statement.strip():
                 self.db.execute(statement)
         # Trigger bodies have internal semicolons; execute each as a whole.
-        for table, name in [('forecasts','forecast'),('entries','entry'),('outcomes','outcome')]:
+        for table, name in [('forecasts','forecast'),('entries','entry'),('outcomes','outcome'),('trial_forecasts','trial_forecast'),('trial_entries','trial_entry'),('trial_outcomes','trial_outcome')]:
             for operation in ('UPDATE','DELETE'):
                 self.db.execute(f"CREATE TRIGGER IF NOT EXISTS immutable_{name}_{operation.lower()} BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT,'Immutable {name}'); END")
         holding_columns={r[1] for r in self.db.execute('PRAGMA table_info(holdings)')}
