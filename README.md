@@ -1,3 +1,7 @@
+# STOX-AI 2.2 — probability-first weekly research
+
+See [Weekly upgrade](docs/WEEKLY_UPGRADE.md) for the preserved-table HTML cleanup, prior-run comparisons, feature challengers and validation limitations. Existing models and runtime data are retained.
+
 # STOX-AI 2.1 — research forecasts with separate strict validation
 
 For the complete healthy-drive migration, exact production profile and Kali commands, see [Production upgrade](docs/PRODUCTION_UPGRADE.md). Research rankings are always visible when core data/models are available; qualification never filters them out.
@@ -180,3 +184,5 @@ stox status
 
 Do not delete your database or warehouse. Completed symbols with verified durable bars are reused; partial symbols replay with idempotent merges. Legacy checkpoints pointing beyond durable history are invalidated with an audit record, and only those symbols are retried. Empty responses cannot mark a price stage complete. Existing inactive/non-queryable archives are retained but excluded from new recommendations. This does not certify historical listing membership or reconstruct missing rename/delisting chains.
 
+
+Optional public SEC ownership and congressional transaction context: see [Public disclosures](docs/PUBLIC_DISCLOSURES.md) for coverage, setup, import commands and source restrictions.

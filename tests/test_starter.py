@@ -128,7 +128,8 @@ def test_starter_real_training_four_horizons_and_incremental(tmp_path,monkeypatc
     report,path=run(cfg,timestamp=stamp,synthetic=True)
     assert set(report['backtests'])=={'20','30','60','90'}
     assert len(report['research_candidates'])==32
-    assert all(r['feature_families']=='price' for r in report['research_candidates'])
+    # Advanced technical and benchmark families use core price data, not disabled enrichment.
+    assert all(r['feature_families'] in ('price','price+price_advanced','price+market') for r in report['research_candidates'])
     assert all((path/f).exists() for f in ('report.json','report.md','report.html','ai_review.md'))
     assert 'intentionally disabled' in (path/'report.md').read_text()
     assert not report['metadata']['enrichment_profile']['enable_sec']

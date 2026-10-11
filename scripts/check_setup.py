@@ -3,6 +3,7 @@ import importlib.metadata
 import os
 from pathlib import Path
 import sys
+import sysconfig
 import tempfile
 
 
@@ -46,7 +47,14 @@ def main():
     if '--installed' in sys.argv:
         if Path(sys.prefix).resolve() != (repo / '.venv').resolve():
             raise ValueError('Installation check is not running in the repository .venv')
-        installed = importlib.metadata.version('stox-ai')
+        # Source-tree egg-info may predate an editable installation. Verify the
+        # actual venv distribution, not metadata shadowed by repo/src above.
+        paths = {sysconfig.get_path('purelib'), sysconfig.get_path('platlib')}
+        versions = {d.version for d in importlib.metadata.distributions(path=sorted(paths))
+                    if d.metadata.get('Name', '').lower().replace('_', '-') == 'stox-ai'}
+        if len(versions) != 1:
+            raise ValueError(f'Expected one installed STOX version in the venv; found {sorted(versions)}')
+        installed = versions.pop()
         if installed != __version__:
             raise ValueError(f'Installed package {installed} differs from source {__version__}')
         print(f'Installed STOX-AI {installed} verified.', flush=True)

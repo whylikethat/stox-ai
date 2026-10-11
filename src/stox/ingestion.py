@@ -89,6 +89,18 @@ class Ingestor:
             warnings.append(f'News unavailable: {exc}')
             self.store.health('news','WARN',str(exc))
         self.optional(symbols,stamp,warnings)
+        if self.cfg.enable_insider_disclosures or self.cfg.enable_house_disclosures:
+            from .disclosures import Collector
+            try:
+                with self.progress.stage('disclosures'):
+                    results=Collector(self.cfg,self.store).sync()
+                    incomplete=[r for r in results if r['status']!='parsed']
+                    detail=f'{len(results)} documents attempted; {len(incomplete)} partial/unparsed/failed. Context only; Senate requires official report import.'
+                    self.store.health('disclosures','WARN' if incomplete else 'OK',detail)
+                    warnings.append('Public disclosures: '+detail)
+            except Exception as exc:
+                warnings.append(f'Optional disclosures unavailable: {exc}')
+                self.store.health('disclosures','WARN',str(exc))
         return session,warnings
 
     def bars(self,requests,master,session,end,stamp,warnings):
@@ -282,7 +294,15 @@ class Ingestor:
                             # Provider page offset and frozen vintage cutoff are persisted atomically.
                             target=self.store.checkpoint(scope+':target') or stamp
                             offset=int(self.store.checkpoint(scope+':offset') or 0)
-                            vintage_start=self.store.checkpoint(scope) or '1776-07-04'
+                            checkpoint = self.store.checkpoint(scope)
+                            vintage_floor = (
+                                pd.Timestamp(target) - pd.Timedelta(days=5 * 365)
+                            ).date().isoformat()
+                            vintage_start = max(
+                                self.cfg.history_start,
+                                vintage_floor,
+                                checkpoint or self.cfg.history_start,
+                            )
                             for rows,next_offset,done in fred.observation_pages(series,self.cfg.history_start,target,offset,vintage_start):
                                 with self.store.transaction():
                                     for row in rows:

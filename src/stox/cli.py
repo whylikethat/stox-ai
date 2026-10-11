@@ -24,6 +24,18 @@ def parser():
     s=sub.add_parser('doctor')
     s.add_argument('--live',action='store_true')
     s.add_argument('--vintages',action='store_true',help='With --live, separately test an ALFRED as-of snapshot')
+    d=sub.add_parser('disclosures',help='Optional public transaction context; never model signals')
+    ds=d.add_subparsers(dest='action',required=True)
+    ds.add_parser('sync')
+    ds.add_parser('list')
+    a=ds.add_parser('import')
+    a.add_argument('--source',choices=('sec','house','senate'),required=True)
+    a.add_argument('--file',required=True)
+    a.add_argument('--url',required=True,help='Official source URL for this report')
+    a.add_argument('--filing-date')
+    a.add_argument('--publication-at')
+    a.add_argument('--acceptance-at')
+    a.add_argument('--amends',help='Official URL or accession corrected by this report, if known')
     sub.add_parser('status')
     sub.add_parser('paths',help='Show resolved installation/data paths without opening the database')
     s=sub.add_parser('compact',help='Explicit stopped-writer SQLite integrity check and compaction')
@@ -89,6 +101,25 @@ def dispatch(args,cfg):
         from .reporting import terminal
         print(terminal(report))
         print(f'Reports: {path}')
+    elif args.command=='disclosures':
+        from pathlib import Path
+        from .storage import Store
+        from .disclosures import Collector
+        cfg.initialize()
+        store=Store(cfg.root)
+        try:
+            with store.lock():
+                collector=Collector(cfg,store)
+                if args.action=='sync': result=collector.sync()
+                elif args.action=='list':
+                    result={'documents':store.records('disclosure_documents'), 'transactions':store.records('disclosure_transactions')}
+                else:
+                    path=Path(args.file)
+                    if path.stat().st_size>20_000_000: raise ValueError('Disclosure exceeds 20 MB bound')
+                    result=collector.ingest(args.source,args.url,path.read_bytes(),
+                        {'filing_date':args.filing_date,'publication_at':args.publication_at,'acceptance_at':args.acceptance_at,'amends':args.amends})
+                print(json.dumps(result,indent=2))
+        finally: store.close()
     elif args.command=='doctor':
         from .doctor import doctor
         if args.vintages and not args.live:

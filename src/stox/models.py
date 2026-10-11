@@ -6,7 +6,7 @@ import os
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
-from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor, ExtraTreesClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import brier_score_loss, mean_absolute_error
@@ -92,6 +92,8 @@ class BinaryModel:
             self.constant=float(np.mean(y))
             return self
         model = LogisticRegression(C=.1,max_iter=400,random_state=17) if self.algorithm=='logistic' else HistGradientBoostingClassifier(max_iter=80,max_leaf_nodes=12,l2_regularization=10,early_stopping=False,random_state=17)
+        if self.algorithm=='extra_trees':
+            model=ExtraTreesClassifier(n_estimators=48,max_depth=10,min_samples_leaf=40,max_features=.8,n_jobs=1,random_state=17)
         self.model = make_pipeline(SimpleImputer(strategy='median',keep_empty_features=True),StandardScaler(),model)
         self.model.fit(X,y)
         return self
@@ -115,9 +117,10 @@ class Sigmoid:
         return np.full(len(p),self.constant) if self.constant is not None else self.model.predict_proba(self.logit(p))[:,1]
 
 class ForecastModel:
-    def __init__(self,algorithm,columns,horizon):
+    def __init__(self,algorithm,columns,horizon,distribution='independent'):
         self.algorithm,self.columns,self.horizon = algorithm,list(columns),horizon
         self.binary,self.calibrators={},{}
+        self.distribution=distribution
 
     def fit(self, train, calibration):
         X=train[self.columns].to_numpy(dtype=float)
@@ -134,6 +137,20 @@ class ForecastModel:
             model=make_pipeline(SimpleImputer(strategy='median',keep_empty_features=True),HistGradientBoostingRegressor(loss='quantile',quantile=q,max_iter=60,max_leaf_nodes=10,l2_regularization=10,early_stopping=False,random_state=17))
             model.fit(X,y)
             self.quantiles[q]=model
+        # Empirical within-bin supports use training outcomes only. Probabilities,
+        # means and quantiles of the challenger all derive from this one distribution.
+        edges=np.r_[-np.inf,THRESHOLDS,np.inf]
+        supports=[]
+        self.bin_support_counts=[]
+        for lo,hi in zip(edges[:-1],edges[1:]):
+            values=y[(y>lo)&(y<=hi)]
+            self.bin_support_counts.append(len(values))
+            if len(values): support=np.quantile(values,np.linspace(.01,.99,41))
+            else:
+                fallback=(hi-.10 if not np.isfinite(lo) else lo+.10 if not np.isfinite(hi) else (lo+hi)/2)
+                support=np.full(41,fallback)
+            supports.extend(support)
+        self.distribution_support=np.array(supports)
         self.train_through=str(train.label_end.max())
         self.calibration_through=str(calibration.label_end.max())
         self.date_ranges={'train':[str(train.session.min()),str(train.session.max())],
@@ -148,23 +165,32 @@ class ForecastModel:
         raw=np.column_stack([self.calibrators[t].predict(self.binary[t].predict(X)) for t in THRESHOLDS])
         from sklearn.isotonic import isotonic_regression
         probabilities=np.array([isotonic_regression(r,increasing=False) for r in raw])
+        if getattr(self,'distribution','independent')=='coherent':
+            expected,quant=self.coherent_summary(probabilities)
+            return probabilities,expected,quant
         expected=self.reg.predict(X)
         quant=np.sort(np.column_stack([m.predict(X) for m in self.quantiles.values()]),axis=1)
         return probabilities,expected,quant
 
+    def coherent_summary(self,probabilities):
+        masses=np.maximum(0,np.diff(np.column_stack([np.ones(len(probabilities)),probabilities,np.zeros(len(probabilities))])*-1,axis=1))
+        weights=np.repeat(masses/41,41,axis=1)
+        expected=weights@self.distribution_support
+        cdf=np.cumsum(weights,axis=1)
+        quant=np.column_stack([self.distribution_support[np.minimum((cdf<q).sum(axis=1),len(self.distribution_support)-1)] for q in (.1,.5,.9)])
+        return expected,quant
+
     def explain(self,row):
-        frame=pd.DataFrame([row])
-        original=self.predict(frame)[0][0,3]
-        output=[]
-        for i,c in enumerate(self.columns):
-            altered=frame.copy()
-            altered[c]=self.reference[i]
-            contribution=float(original-self.predict(altered)[0][0,3])
-            output.append({'feature':c,'probability_change_from_reference':contribution})
+        # Independent row perturbations can be inferred together. This preserves
+        # the attribution definition while avoiding hundreds of one-row calls.
+        frame=pd.DataFrame([dict(row) for _ in range(len(self.columns)+1)])
+        for i,column in enumerate(self.columns): frame.loc[i+1,column]=self.reference[i]
+        probabilities=self.predict(frame)[0][:,3]
+        output=[{'feature':column,'probability_change_from_reference':float(probabilities[0]-probabilities[i+1])} for i,column in enumerate(self.columns)]
         return sorted(output,key=lambda r:abs(r['probability_change_from_reference']),reverse=True)[:6]
 
 
-def fit_calibrated(frame, algorithm, columns,horizon):
+def fit_calibrated(frame, algorithm, columns,horizon,distribution='independent'):
     days=sorted(frame.session.unique())
     if len(days)<100:
         raise ValueError('Insufficient training dates')
@@ -172,7 +198,7 @@ def fit_calibrated(frame, algorithm, columns,horizon):
     train,cal=temporal_split(frame,cut)
     if len(train)<100 or len(cal)<40:
         raise ValueError('Insufficient purged training/calibration support')
-    return ForecastModel(algorithm,columns,horizon).fit(train,cal)
+    return ForecastModel(algorithm,columns,horizon,distribution).fit(train,cal)
 
 
 def train_horizon(frame,horizon,cfg):
@@ -186,17 +212,20 @@ def train_horizon(frame,horizon,cfg):
     if len(days)<500:
         raise ValueError(f'{horizon}D: fewer than 500 mature historical feature dates')
     holdout_start=days[int(len(days)*.80)]
-    development,holdout=temporal_split(data,holdout_start)
+    preholdout,holdout=temporal_split(data,holdout_start)
+    promotion_start=days[int(len(days)*.70)]
+    development,promotion=temporal_split(preholdout,promotion_start)
     d_days=sorted(development.session.unique())
     families=[('price',FAMILIES['price'])]
     for family,columns in FAMILIES.items():
-        available=[c for c in columns if development[c].notna().mean()>=.4]
+        available=[c for c in columns if c in development and development[c].notna().mean()>=.4]
         if family!='price' and available:
             families.append(('price+'+family,FAMILIES['price']+available))
     experiments=[]
     for family,columns in families:
-        for algorithm in ('logistic','histogram'):
+        for algorithm in cfg.model_algorithms:
             fold_metrics=[]
+            coherent_metrics=[]
             for fraction in (.60,.80):
                 cut=d_days[int(len(d_days)*fraction)]
                 train,valid=temporal_split(development,cut)
@@ -205,22 +234,36 @@ def train_horizon(frame,horizon,cfg):
                 if len(valid)<40:
                     continue
                 model=fit_calibrated(train,algorithm,columns,horizon)
-                p,e,_=model.predict(valid)
-                fold_metrics.append(metrics(valid,p[:,3],e,horizon))
+                p,e,q=model.predict(valid)
+                m=metrics(valid,p[:,3],e,horizon)
+                m['conflict_rate']=float(np.mean(((p[:,3]>.55)&(q[:,1]<0))|((p[:,3]<.45)&(q[:,1]>0))))
+                fold_metrics.append(m)
+                model.distribution='coherent'
+                cp,ce,cq=model.predict(valid)
+                cm=metrics(valid,cp[:,3],ce,horizon)
+                cm['conflict_rate']=float(np.mean(((cp[:,3]>.55)&(cq[:,1]<0))|((cp[:,3]<.45)&(cq[:,1]>0))))
+                coherent_metrics.append(cm)
             if fold_metrics:
                 score=float(np.mean([m['brier']+m['ece'] for m in fold_metrics]))
-                experiments.append({'family':family,'algorithm':algorithm,'columns':columns,'score':score,'folds':fold_metrics})
+                experiments.append({'family':family,'algorithm':algorithm,'distribution':'independent','columns':columns,'score':score,'folds':fold_metrics})
+                # Same calibrated probabilities: select coherent returns only with development
+                # conflict improvement and <=5% return-MAE degradation. Never inspect holdout.
+                mae=np.mean([m['return_mae'] for m in fold_metrics])
+                coherent_ok=np.mean([m['return_mae'] for m in coherent_metrics])<=1.05*mae and np.mean([m['conflict_rate'] for m in coherent_metrics])<np.mean([m['conflict_rate'] for m in fold_metrics])
+                experiments.append({'family':family,'algorithm':algorithm,'distribution':'coherent','columns':columns,'score':score,'folds':coherent_metrics,'eligible':bool(coherent_ok)})
     if not experiments:
         raise ValueError('No valid walk-forward experiments')
-    experiments.sort(key=lambda x:(x['score'],len(x['columns'])))
-    chosen=experiments[0]
+    experiments.sort(key=lambda x:(x['score'],len(x['columns']),x['distribution']!='coherent'))
+    eligible=[e for e in experiments if e.get('eligible',True)]
+    chosen=eligible[0]
     # Optional family must improve over the best baseline by >= 0.005 on development only.
-    baseline=min((e for e in experiments if e['family']=='price'),key=lambda x:x['score'])
+    baseline=min((e for e in eligible if e['family']=='price'),key=lambda x:x['score'])
     if chosen['family']!='price' and baseline['score']-chosen['score']<.005:
         chosen=baseline
-    champion=fit_calibrated(development,chosen['algorithm'],chosen['columns'],horizon)
+    champion=fit_calibrated(development,chosen['algorithm'],chosen['columns'],horizon,chosen['distribution'])
     p,e,q=champion.predict(holdout)
     evaluation=metrics(holdout,p[:,3],e,horizon)
+    evaluation['conflict_rate']=float(np.mean(((p[:,3]>.55)&(q[:,1]<0))|((p[:,3]<.45)&(q[:,1]>0))))
     evaluation['interval_80_coverage']=float(((holdout.target>=q[:,0])&(holdout.target<=q[:,2])).mean())
     evaluation['tail_brier']={str(t):float(brier_score_loss((holdout.target>t).astype(int),p[:,i])) for i,t in enumerate(THRESHOLDS)}
     # Threshold selection uses development fold reliability, never holdout returns.
@@ -238,7 +281,10 @@ def train_horizon(frame,horizon,cfg):
             buckets.append({'bucket':number})
     threshold=min((b['bucket']/10 for b in buckets),default=None)
     valid=evaluation['ece']<=cfg.max_calibration_error and evaluation['brier']<=evaluation['base_brier'] and evaluation['blocks']>=cfg.min_validation_blocks
-    champion.metadata={'feature_columns':chosen['columns'],'available_feature_families':[name for name,cols in FAMILIES.items() if development[cols].notna().any().any()],'horizon':horizon,'algorithm':chosen['algorithm'],'family':chosen['family'],
+    champion.metadata={'feature_columns':chosen['columns'],'available_feature_families':[name for name,cols in FAMILIES.items() if development[[c for c in cols if c in development]].notna().any().any()],'horizon':horizon,'algorithm':chosen['algorithm'],'family':chosen['family'],
+                       'distribution':chosen['distribution'],'distribution_bin_counts':champion.bin_support_counts,'model_design_version':3,'promotion_start':promotion_start,
+                       'family_decisions':{name:('selected' if ('price' if name=='price' else 'price+'+name)==chosen['family'] else 'evaluated; not selected' if any(f==('price' if name=='price' else 'price+'+name) for f,c in families) else 'insufficient point-in-time development coverage') for name in FAMILIES},
+                       'family_coverage':{name:{c:float(development[c].notna().mean()) if c in development else 0. for c in cols} for name,cols in FAMILIES.items()},
                        'holdout_start':holdout_start,'holdout_end':str(holdout.session.max()),
                        'date_ranges':{**champion.date_ranges,'holdout':[str(holdout.session.min()),str(holdout.session.max())]},
                        'train_through':champion.train_through,'calibration_through':champion.calibration_through,
@@ -252,6 +298,7 @@ def train_horizon(frame,horizon,cfg):
     if champion.committee:
         other=champion.committee.predict(holdout)[0][:,3]
         champion.metadata['agreement_p90']=float(np.quantile(np.abs(other-p[:,3]),.9))
+    champion.promotion_frame=promotion
     return champion,holdout
 
 
@@ -300,8 +347,9 @@ def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
             promote=old is None
             if old is not None:
                 # Evaluate both only on outcomes that neither fitted estimator/calibrator has seen.
-                boundary=max(old.calibration_through,candidate.calibration_through)
-                comparison=holdout[pd.to_datetime(holdout.session)>pd.Timestamp(boundary)+pd.Timedelta(days=5)]
+                boundary=max(old.calibration_through,candidate.calibration_through,old.metadata.get('holdout_end',old.calibration_through))
+                comparison=candidate.promotion_frame
+                comparison=comparison[pd.to_datetime(comparison.session)>pd.Timestamp(boundary)+pd.Timedelta(days=5)]
                 if len(comparison)>=cfg.min_bucket_samples and len(set(independent_blocks(comparison,horizon)))>=cfg.min_validation_blocks:
                     op=old.predict(comparison)[0][:,3]
                     cp=candidate.predict(comparison)[0][:,3]
@@ -310,8 +358,11 @@ def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
                     blocks=independent_blocks(comparison,horizon)
                     b=pd.Series(differences).groupby(blocks).mean()
                     improvement=float(b.mean()-1.96*b.std(ddof=1)/np.sqrt(len(b)))
-                    promote=improvement>0 and candidate.metadata['evaluation']['ece']<=old.metadata['evaluation']['ece']
+                    om=metrics(comparison,op,old.predict(comparison)[1],horizon)
+                    cm=metrics(comparison,cp,candidate.predict(comparison)[1],horizon)
+                    promote=improvement>0 and cm['ece']<=om['ece'] and cm['return_mae']<=om['return_mae']*1.05
                     candidate.metadata['promotion_lower_improvement']=improvement
+            del candidate.promotion_frame
             mid=digest(candidate.metadata)[:24]
             candidate.model_id=mid
             rel=Path('models')/(mid+'.joblib')
@@ -333,3 +384,23 @@ def registry_train(labels,cfg,store,force=False,stamp=None,progress=None):
     if progress: progress.update(processed=len(cfg.horizons))
     return results
 
+
+
+def needs_training_labels(cfg,store,features,stamp,force=False):
+    """Inference within the cadence needs no historical label rebuild.
+
+    Missing models, expanded history or unavailable selected inputs force the
+    established evaluation/fallback path. After the cadence, exact matured-label
+    counts are still computed by registry_train before any training starts.
+    """
+    import json
+    if force: return True
+    for horizon in cfg.horizons:
+        row=store.db.execute("SELECT created_at,metadata FROM models WHERE horizon=? AND status='champion' ORDER BY created_at DESC LIMIT 1",(horizon,)).fetchone()
+        if row is None: return True
+        meta=json.loads(row['metadata'])
+        if cfg.history_start<meta.get('history_start',cfg.history_start): return True
+        if (pd.Timestamp(stamp)-pd.Timestamp(row['created_at'])).days>=cfg.retrain_days: return True
+        for column in meta.get('feature_columns',[]):
+            if column not in features or not features[column].notna().any(): return True
+    return False

@@ -50,9 +50,14 @@ def forecast_rows(features, assets, models, cfg, expected_session):
                     reasons.append('non-positive expected net return')
                 if 1-p[i,0]>cfg.max_tail_probability:
                     reasons.append('catastrophic tail estimate exceeds risk policy')
+                if model.metadata.get('distribution')=='coherent':
+                    mass=-np.diff(np.r_[1.,p[i],0.])
+                    counts=model.metadata.get('distribution_bin_counts',[])
+                    if len(counts)!=len(mass) or any(c==0 and m>1e-12 for c,m in zip(counts,mass)):
+                        reasons.append('coherent distribution has unsupported return bins')
                 disagreement=abs(p[i,3]-committee[i])
                 rule=max(.01,model.metadata.get('agreement_p90',.05))
-                agreement='high' if disagreement<=rule/2 else 'moderate' if disagreement<=rule else 'low'
+                agreement=('high' if disagreement<=rule/2 else 'moderate' if disagreement<=rule else 'low') if model.committee else 'unavailable'
                 consistency_status,consistency_reasons=consistency(float(p[i,3]),float(expected[i]),q[i])
                 reasons.extend('forecast inconsistency: '+r for r in consistency_reasons)
                 if agreement=='low':
@@ -63,15 +68,15 @@ def forecast_rows(features, assets, models, cfg, expected_session):
                         'p_loss_5':float(1-p[i,2]),'p_loss_10':float(1-p[i,1]),'p_loss_20':float(1-p[i,0]),
                         'quantiles_10_50_90':[float(v) for v in q[i]],
                         'interval_validation_coverage':evaluation['interval_80_coverage'],
-                        'distribution_status':'empirical holdout coverage; not a guaranteed interval',
-                        'model_agreement':agreement,'model_probabilities':{model.algorithm:float(p[i,3]),'alternative':float(committee[i])},
+                        'distribution_status':model.metadata.get('distribution','independent')+'; empirical holdout coverage; not a guaranteed interval',
+                        'model_agreement':agreement,'model_probabilities':{model.algorithm:float(p[i,3]),'alternative':float(committee[i]) if model.committee else None},
                         'consistency_status':consistency_status,'consistency_reasons':consistency_reasons,
                         'calibration_support':bucket,'qualified':not reasons,'exclusions':reasons,
                         'probability_resolution':max(.01,(bucket['interval'][1]-bucket['interval'][0])/2) if bucket else 1.,
                         'quality_label':'Validated opportunity' if not reasons else 'Research only',
                         'close':float(row['close']),'dollar_volume':float(row['dollar_volume']) if np.isfinite(row['dollar_volume']) else None,
                         'volatility':float(row['volatility']) if np.isfinite(row['volatility']) else None,'drawdown':float(row['drawdown']) if np.isfinite(row['drawdown']) else None,
-                        'session':row['session'],'model_id':model.model_id,'feature_version':'causal-v2',
+                        'session':row['session'],'model_id':model.model_id,'feature_version':row.get('feature_version','causal-v2'),
                         'feature_families':model.metadata['family'],'model_validated':model.metadata['validated'],
                         'event_warning':'Upcoming earnings status unknown unless a verified calendar event is included',
                         'explanations':[]}
@@ -79,21 +84,16 @@ def forecast_rows(features, assets, models, cfg, expected_session):
     return output
 
 def rank(rows):
-    # Contradictory outputs remain visible, after internally consistent forecasts.
-    if any(r.get('consistency_status')=='conflicting' for r in rows) and any(r.get('consistency_status')!='conflicting' for r in rows):
-        ordered=rank([r for r in rows if r.get('consistency_status')!='conflicting'])+rank([r for r in rows if r.get('consistency_status')=='conflicting'])
-        return [{**r,'rank':i+1} for i,r in enumerate(ordered)]
-    ordered=sorted(rows,key=lambda r:(-r['p_gain'],r['symbol'],r['horizon']))
-    groups=[]
-    while ordered:
-        anchor=ordered[0]
-        tolerance=anchor['probability_resolution']
-        group=[r for r in ordered if anchor['p_gain']-r['p_gain']<=min(tolerance,r['probability_resolution'])]
-        keys={(r['symbol'],r['horizon']) for r in group}
-        ordered=[r for r in ordered if (r['symbol'],r['horizon']) not in keys]
-        group.sort(key=lambda r:(-r['expected_return'],r['p_loss_20'],r['symbol'],r['horizon']))
-        groups.extend(group)
-    return [{**r,'rank':i+1} for i,r in enumerate(groups)]
+    """Deterministic probability-first ranking; no expected-return tolerance bands."""
+    agreement={'high':0,'moderate':1,'low':2}
+    def key(r):
+        support=r.get('calibration_support') or {}
+        return (not r.get('qualified',False), r.get('consistency_status')=='conflicting',
+                -r['p_gain'],r.get('p_loss_10',r.get('p_loss_20',1)),r.get('p_loss_20',1),
+                agreement.get(r.get('model_agreement'),3),-support.get('blocks',0),
+                -r['expected_return'],-r.get('median_return',0),
+                -(r.get('dollar_volume') or 0),r['symbol'],r['horizon'])
+    return [{**r,'rank':i+1} for i,r in enumerate(sorted(rows,key=key))]
 
 def leaderboards(rows):
     return rank([r for r in rows if r['horizon']==30])[:20],rank(rows)[:20]

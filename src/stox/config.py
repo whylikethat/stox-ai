@@ -14,6 +14,14 @@ class Config:
     history_start: str = '2016-01-01'
     enable_news: bool = True
     news_lookback_days: int = 90
+    enable_insider_disclosures: bool = False
+    enable_house_disclosures: bool = False
+    congressional_terms_acknowledged: bool = False
+    disclosure_documents_per_run: int = 10
+    disclosure_lookback_days: int = 90
+    enable_analyst_signals: bool = False
+    enable_options_signals: bool = False
+    model_algorithms: tuple[str, ...] = ('logistic', 'histogram', 'extra_trees')
     enable_sec: bool = True
     enable_fred: bool = True
     enable_alpha_vantage: bool = True
@@ -61,13 +69,17 @@ class Config:
         location = Path(root or os.environ.get('STOX_HOME') or configured_root).expanduser()
         if not location.is_absolute():
             location = base / location
-        for key in ('horizons', 'symbols', 'macro_series'):
+        for key in ('horizons', 'symbols', 'macro_series', 'model_algorithms'):
             if key in values:
                 values[key] = tuple(values[key])
         cfg = cls(root=location.resolve(), **values)
-        for key in ('enable_news', 'enable_sec', 'enable_fred', 'enable_alpha_vantage','autonomous_universe'):
+        for key in ('enable_news', 'enable_sec', 'enable_fred', 'enable_alpha_vantage','autonomous_universe','enable_insider_disclosures','enable_house_disclosures','congressional_terms_acknowledged','enable_analyst_signals','enable_options_signals'):
             if type(getattr(cfg,key)) is not bool:
                 raise ValueError(f'{key} must be a boolean')
+        if not 1 <= cfg.disclosure_documents_per_run <= 100 or not 1 <= cfg.disclosure_lookback_days <= 365:
+            raise ValueError('Disclosure limits: 1–100 documents/run and 1–365 days lookback')
+        if not cfg.model_algorithms or not set(cfg.model_algorithms)<= {'logistic','histogram','extra_trees'}:
+            raise ValueError('Unsupported model_algorithms')
         if type(cfg.news_lookback_days) is not int or cfg.news_lookback_days < 1:
             raise ValueError('news_lookback_days must be a positive integer')
         if not 1 <= cfg.universe_size <= 1500 or not 1 <= cfg.screen_batch_size <= 100:

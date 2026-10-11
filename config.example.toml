@@ -47,3 +47,15 @@ history_window_days = 365
 news_pages_per_run = 100
 sec_symbols_per_run = 20
 report_retention_runs = 30
+
+# Optional delayed public disclosures; see docs/PUBLIC_DISCLOSURES.md before enabling.
+enable_insider_disclosures = false
+enable_house_disclosures = false
+congressional_terms_acknowledged = false
+disclosure_documents_per_run = 10
+disclosure_lookback_days = 90
+
+# New families remain optional and require point-in-time out-of-sample evidence.
+model_algorithms = ["logistic", "histogram", "extra_trees"]
+enable_analyst_signals = false
+enable_options_signals = false

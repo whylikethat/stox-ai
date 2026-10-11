@@ -1,3 +1,13 @@
+## 2.2.0
+
+- Rank research by probability and downside risk before expected return; retain strict qualification and consistency categories.
+- Preserve leaderboard layout while replacing raw HTML JSON/debug dumps with compact status, validation and performance tables.
+- Add stored prior-run Top-20 comparisons without invented attribution or randomized changes.
+- Add causal advanced-price, market, filing and deterministic news challenger features; keep unavailable external signals optional.
+- Add ExtraTrees and a training-only empirical coherent-distribution challenger with development selection gates.
+- Separate promotion comparison from the final holdout and exclude the incumbent's already inspected history.
+- Preserve schema 4, existing models, healthy runtime data and user configuration.
+
 ## 2.1.0
 
 - Separate research rankings, strict qualification and prospective cohorts.

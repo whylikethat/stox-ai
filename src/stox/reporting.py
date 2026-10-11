@@ -43,23 +43,28 @@ def terminal(report):
             lines.append('  '+('; '.join(r['exclusions']) or 'All strict qualification gates passed'))
             lines.append(f"  session={r['session']} close=${r['close']:.2f} median dollar volume={r.get('dollar_volume')} — {r['event_warning']}")
             context=r.get('catalyst_context',{})
-            lines.append('  Available catalysts: '+json.dumps({k:context.get(k,[]) for k in ('earnings','news','filings')},ensure_ascii=True))
+            lines.append('  Available context: '+', '.join(f'{k}={len(context.get(k,[]))}' for k in ('earnings','news','filings','public_transactions')))
     for horizon,rows in report.get('by_horizon',{}).items():
         lines.append('\n'+horizon+'D RESEARCH — TOP 20\n'+table(rows[:20]))
     lines.append('\nSTRICT VALIDATED OPPORTUNITIES: '+(', '.join(r['symbol']+' '+str(r['horizon'])+'D' for r in report.get('qualified_across_horizons',[])) or 'none'))
     lines.append('\nPER-HORIZON VALIDATION\n'+json.dumps(report.get('validation',{}),indent=2))
-    lines.extend('NOTICE: '+w for w in report['warnings'])
+    lines.extend('NOTICE: '+w for w in human_warnings(report))
     return '\n'.join(lines)
 
 def evidence(store,symbol,cutoff,cfg=None, snapshots=None):
     def records(kind):
-        return snapshots[kind] if snapshots is not None else store.records(kind,cutoff)
+        if snapshots is not None:
+            index=snapshots.get('_by_symbol')
+            return index.get(kind,{}).get(symbol,[]) if index is not None and kind in index else snapshots.get(kind,[])
+        return store.records(kind,cutoff)
     news=[r for r in (records('news') if cfg is None or cfg.enable_news else []) if symbol in r.get('symbols',[])][-10:]
     filings=[r for r in (records('filings') if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol][-6:]
     facts=[r for r in (records('facts') if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol and r.get('concept') in ('Assets','Liabilities','NetIncomeLoss','Revenues','OperatingIncomeLoss')][-12:]
     earnings=[r for r in (records('earnings') if cfg is None or cfg.enable_alpha_vantage else []) if r.get('symbol')==symbol]
     actions=relevant(records('actions'),symbol)[-10:]
-    return {'news':news,'filings':filings,'fundamental_evidence':facts,'earnings':earnings,'corporate_actions':actions,
+    from .disclosures import context
+    transactions=context(store,symbol,cutoff,snapshots)
+    return {'public_transactions':transactions,'transaction_context_notice':'Delayed public disclosures; incomplete coverage; not recommendations. Amendments may overlap originals.','news':news,'filings':filings,'fundamental_evidence':facts,'earnings':earnings,'corporate_actions':actions,
             'known_gaps':['Unverified future earnings dates must be treated as unknown','Historical security type/universe metadata is incomplete','Free provider corporate-action announcements may be late']}
 
 def markdown(report,review=False):
@@ -99,14 +104,20 @@ def html_report(report,md):
         body=''.join('<tr>'+''.join('<td>'+html.escape(str(v))+'</td>' for v in [r['rank'],r['symbol'],str(r['horizon'])+'D',percent(r['p_gain']),percent(r['expected_return']),percent(r['p_loss_10']),percent(r.get('median_return')),r['model_agreement'],r.get('consistency_status','unknown'),'VALIDATED' if r['qualified'] else 'RESEARCH'] )+'</tr>' for r in rows)
         return '<div class="scroll"><table>'+headers+body+'</table></div>'
     horizon_tables=''.join('<h2>'+html.escape(h)+'D research — Top 20</h2>'+leaderboard(rows[:20]) for h,rows in report.get('by_horizon',{}).items())
-    warnings=''.join('<li>'+html.escape(w)+'</li>' for w in report['warnings'])
-    candidates=''.join('<details><summary>'+html.escape(d['symbol'])+' · forecasts and evidence</summary><pre>'+html.escape(json.dumps(d,indent=2))+'</pre></details>' for d in report['details'])
+    warnings=''.join('<li>'+html.escape(w)+'</li>' for w in human_warnings(report))
+    summary=run_summary(report)
+    validation=validation_table(report)
+    performance=performance_table(report)
+    changes=changes_table(report.get('changes',{}))
     return '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><title>STOX-AI · Investment Research</title><style>
-    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101923;color:#eaf0f5;font:16px/1.6 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:40px 24px}header{border-bottom:1px solid #344251;padding-bottom:24px}h1{font-size:42px;margin:4px 0}h2{margin-top:36px;font-size:23px}.eyebrow{color:#78d9c2;letter-spacing:3px;font-size:12px}section,details{background:#182532;border:1px solid #344251;border-radius:12px;padding:20px;margin-top:18px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #344251;white-space:nowrap}th{color:#b2c0ce;font-size:12px;text-transform:uppercase}.scroll{overflow:auto}.empty{color:#eed399}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#c5d3e0}.warning{border-color:#887349}summary{cursor:pointer;font-weight:600}footer{margin-top:32px;color:#acbac7;font-size:13px}</style><main><header><div class="eyebrow">STOX-AI / LOCAL INVESTMENT RESEARCH</div><h1>Evidence before conviction.</h1><p>20D · 30D primary · 60D · 90D — calendar-day horizons</p></header>'''+ ('<section class="warning"><b>SYNTHETIC DEMONSTRATION</b><p>Not investment evidence.</p></section>' if report.get('synthetic') else '') + '<section><pre>'+html.escape(json.dumps(report['metadata'],indent=2))+'</pre></section><section class="warning"><h2>Data and model status</h2><ul>'+warnings+'</ul></section><h2>Primary 30D</h2>'+leaderboard(report['primary_30d'])+'<h2>Best Across All Horizons</h2>'+leaderboard(report['across_horizons'])+horizon_tables+'<h2>Top 3 research highlights</h2>'+leaderboard(report['primary_30d'][:3])+'<h2>Strict validated opportunities</h2>'+leaderboard(report.get('qualified_across_horizons',[]))+'<details><summary>Per-horizon validation diagnostics</summary><pre>'+html.escape(json.dumps(report.get('validation',{}),indent=2))+'</pre></details><details><summary>All research predictions, reasons and context</summary><pre>'+html.escape(json.dumps(report.get('research_candidates',[]),indent=2))+'</pre></details><h2>Candidate evidence</h2>'+candidates+'<details><summary>Holdings</summary><pre>'+html.escape(json.dumps(report['holdings'],indent=2))+'</pre></details><details><summary>Prospective performance</summary><pre>'+html.escape(json.dumps(report['prospective'],indent=2))+'</pre></details><details><summary>Backtest performance</summary><pre>'+html.escape(json.dumps(report['backtests'],indent=2))+'</pre></details><footer>No automatic trading or position sizing. No forecast is a guarantee. Reports evaluate holdings only when the application runs.</footer></main></html>'
+    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101923;color:#eaf0f5;font:16px/1.6 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:40px 24px}header{border-bottom:1px solid #344251;padding-bottom:24px}h1{font-size:42px;margin:4px 0}h2{margin-top:36px;font-size:23px}.eyebrow{color:#78d9c2;letter-spacing:3px;font-size:12px}section,details{background:#182532;border:1px solid #344251;border-radius:12px;padding:20px;margin-top:18px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #344251;white-space:nowrap}th{color:#b2c0ce;font-size:12px;text-transform:uppercase}.scroll{overflow:auto}.empty{color:#eed399}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#c5d3e0}.warning{border-color:#887349}summary{cursor:pointer;font-weight:600}footer{margin-top:32px;color:#acbac7;font-size:13px}</style><main><header><div class="eyebrow">STOX-AI / LOCAL INVESTMENT RESEARCH</div><h1>Evidence before conviction.</h1><p>20D · 30D primary · 60D · 90D — calendar-day horizons</p></header>'''+ ('<section class="warning"><b>SYNTHETIC DEMONSTRATION</b><p>Not investment evidence.</p></section>' if report.get('synthetic') else '') + summary+'<section class="warning"><h2>Data and model status</h2><ul>'+warnings+'</ul></section><h2>Primary 30D</h2>'+leaderboard(report['primary_30d'])+'<h2>Best Across All Horizons</h2>'+leaderboard(report['across_horizons'])+changes+horizon_tables+'<h2>Top 3 research highlights</h2>'+leaderboard(report['primary_30d'][:3])+'<h2>Strict validated opportunities</h2>'+leaderboard(report.get('qualified_across_horizons',[]))+validation+performance+'<footer>Delayed public disclosures are context, not recommendations. Full evidence, reasons and audit details are in report.json (latest.json). Current-universe history has survivorship limitations. No automatic trading or position sizing. No forecast is a guarantee.</footer></main></html>'
+
 
 def write_reports(root,report):
     directory=Path(root)/'reports'/'runs'/report['run_id']
     directory.mkdir(parents=True,exist_ok=False)
+    if 'changes' not in report:
+        report['changes']=compare_previous(root,report)
     md=markdown(report)
     artifacts={'report.json':json.dumps(report,indent=2,allow_nan=False),'report.md':md,'report.html':html_report(report,md)}
     for name,content in artifacts.items():
@@ -123,6 +134,7 @@ def write_reports(root,report):
         tmp=dest.with_suffix(dest.suffix+'.tmp')
         tmp.write_text(content,encoding='utf-8')
         os.replace(tmp,dest)
+    save_comparison(root,report)
     return directory
 
 
@@ -139,3 +151,145 @@ def cleanup_reports(root, keep):
         known={'report.json','report.md','report.html','ai_review.md'}
         if {p.name for p in path.iterdir()} <= known:
             shutil.rmtree(path)
+
+
+def small_table(headings, rows):
+    def cell(v): return html.escape(str(v if v is not None else 'unavailable'))
+    return '<div class="scroll"><table><tr>'+''.join('<th>'+cell(h)+'</th>' for h in headings)+'</tr>'+''.join('<tr>'+''.join('<td>'+cell(v)+'</td>' for v in row)+'</tr>' for row in rows)+'</table></div>'
+
+
+def current_provider_health(rows):
+    """Health table is keyed current state; exclude per-security historical diagnostics."""
+    result={}
+    for row in rows:
+        name=row.get('provider','')
+        if name.startswith(('security-request:','model:')): continue
+        if ':' in name: continue
+        if name not in result or row.get('updated_at','')>result[name].get('updated_at',''):
+            result[name]=row
+    return [result[k] for k in sorted(result)]
+
+
+def human_warnings(report):
+    important={r['symbol'] for r in report['primary_30d']+report['across_horizons']}
+    corporate=[]; other=[]
+    for warning in dict.fromkeys(report['warnings']):
+        if 'Unresolved ' in warning or 'Split ratio' in warning or 'outcome unresolved' in warning:
+            corporate.append(warning)
+        else: other.append(warning)
+    if corporate:
+        other.append(f'Corporate actions: {len(corporate)} unresolved notices; affected histories/outcomes may be excluded. Full details in latest.json.')
+        other.extend(w for w in corporate if w.split(':')[0] in important)
+    return other[:24]
+
+
+def run_summary(report):
+    meta=report['metadata']; validation=report.get('validation',{})
+    rows=[('Version',meta.get('version')),('Market session',meta.get('market_session')),
+          ('Run timestamp',meta.get('run_started')),('Event cutoff',meta.get('event_cutoff')),
+          ('Horizons',' / '.join(h+'D' for h in report.get('by_horizon',{}))),
+          ('Forecast securities',len({r['symbol'] for r in report.get('research_candidates',[])})),
+          ('Validation',', '.join(h+'D: '+('validated' if v['validated'] else 'research') for h,v in validation.items())),
+          ('News checkpoint',meta.get('news_checkpoint')),('SEC checkpoint',meta.get('sec_checkpoint'))]
+    families={str(r['horizon']):r.get('feature_families','unknown') for r in report.get('research_candidates',[])}
+    rows.append(('Selected model inputs',', '.join(h+'D: '+str(families[h]) for h in sorted(families,key=int))))
+    providers=[(r['provider'],r['status'],r.get('updated_at'),str(r.get('detail',''))[:180] if not str(r.get('detail','')).lstrip().startswith(('{','[')) else 'Structured diagnostic retained in JSON') for r in current_provider_health(meta.get('provider_health',[]))]
+    return '<section><h2>Current run</h2>'+small_table(['Item','Value'],rows)+small_table(['Provider','Current status','Checked','Summary'],providers)+'</section>'
+
+
+def validation_table(report):
+    rows=[]
+    for h,v in report.get('validation',{}).items():
+        ranges=v.get('date_ranges',{})
+        rows.append([h+'D','YES' if v['validated'] else 'NO',percent(v.get('learned_threshold')),
+                     v.get('holdout_samples'),v.get('independent_blocks'),
+                     f"{v.get('brier',0):.5f}",f"{v.get('base_brier',0):.5f}",percent(v.get('calibration_error')),
+                     len(v.get('supported_reliability_buckets',[])),
+                     '; '.join(k+': '+' to '.join(map(str,val)) for k,val in ranges.items()),
+                     '; '.join(v.get('failure_reasons',[])) or 'All validation gates passed'])
+    return '<h2>Per-horizon validation diagnostics</h2>'+small_table(['Horizon','Validated','Threshold','Samples','Blocks','Brier','Base Brier','Calibration error','Supported buckets','Date ranges','Reasons'],rows)
+
+
+def performance_table(report):
+    rows=[]
+    for cohort in ('research_only','qualified'):
+        for h,v in report.get('prospective',{}).get(cohort,{}).get('horizons',{}).items():
+            rows.append([cohort,h+'D',v['n'],percent(v['hit_rate']),percent(v['mean_return']),v['brier']])
+    out='<h2>Prospective performance</h2>'
+    out+=small_table(['Cohort','Horizon','Settled','Win rate','Mean net','Brier'],rows) if rows else '<p>No matured prospective outcomes yet.</p>'
+    rows=[[h+'D',v.get('n'),percent(v.get('top1_hit_rate')),percent(v.get('top3_hit_rate')),percent(v.get('mean_return'))] for h,v in report.get('backtests',{}).items()]
+    return out+'<h2>Historical backtests — separate from prospective outcomes</h2>'+small_table(['Horizon','Samples','Top 1 win rate','Top 3 win rate','Mean net'],rows)
+
+
+def comparison_snapshot(report):
+    fields=('symbol','horizon','rank','p_gain','expected_return','p_loss_10','session','model_id')
+    return {'run_id':report['run_id'],'run_mode':report['metadata'].get('run_mode'),
+            'market_session':report['metadata'].get('market_session'),
+            **{name:[{k:r.get(k) for k in fields} for r in report[name][:20]] for name in ('primary_30d','across_horizons')}}
+
+
+def compare_snapshots(current, previous):
+    result={'previous_run_id':previous.get('run_id') if previous else None,'tables':{}}
+    for table in ('primary_30d','across_horizons'):
+        old={(r['symbol'],r['horizon']):r for r in (previous or {}).get(table,[])}
+        new={(r['symbol'],r['horizon']):r for r in current[table]}
+        rows=[]
+        for key in dict.fromkeys(list(new)+list(old)):
+            a=new.get(key); b=old.get(key)
+            delta=(b['rank']-a['rank']) if a and b else None
+            status='NEW' if not b else 'DROPPED' if not a else 'UP' if delta>0 else 'DOWN' if delta<0 else 'UNCHANGED'
+            row={'symbol':key[0],'horizon':key[1],'current_rank':a['rank'] if a else None,'previous_rank':b['rank'] if b else None,'rank_change':delta,'status':status}
+            for field in ('p_gain','expected_return','p_loss_10'):
+                row[field]=a[field] if a else None
+                row[field+'_change']=a[field]-b[field] if a and b else None
+            row['reason']='Model version changed' if a and b and a.get('model_id')!=b.get('model_id') else 'New completed session' if a and b and a.get('session')!=b.get('session') else 'No causal attribution inferred'
+            rows.append(row)
+        result['tables'][table]=rows
+    return result
+
+
+def compare_previous(root,report):
+    path=Path(root)/'reports'/'comparison.json'
+    previous=None
+    if path.exists():
+        try: previous=json.loads(path.read_text())
+        except (ValueError,OSError): pass
+    if previous is None:
+        legacy=Path(root)/'reports'/'latest.json'
+        if legacy.exists():
+            try: previous=comparison_snapshot(json.loads(legacy.read_text()))
+            except (ValueError,OSError,KeyError): pass
+    if previous and previous.get('run_mode')!=report['metadata'].get('run_mode'): previous=None
+    return compare_snapshots(comparison_snapshot(report),previous)
+
+
+def save_comparison(root,report):
+    dest=Path(root)/'reports'/'comparison.json'; tmp=dest.with_suffix('.tmp')
+    tmp.write_text(json.dumps(comparison_snapshot(report)));os.replace(tmp,dest)
+
+
+def changes_table(changes):
+    out='<h2>What Changed Since Last Run</h2>'
+    if not changes.get('previous_run_id'): return out+'<p>No comparable prior snapshot yet. This run establishes the baseline.</p>'
+    for name,rows in changes.get('tables',{}).items():
+        out+='<h3>'+('Primary 30D' if name=='primary_30d' else 'Across horizons')+'</h3>'
+        out+=small_table(['Ticker','Horizon','Current rank','Previous rank','Rank change','P(gain)','P(gain) change (pp)','Expected net','Expected change (pp)','Loss >10%','Loss change (pp)','Status','Observation'],
+            [[r['symbol'],str(r['horizon'])+'D',r['current_rank'],r['previous_rank'],r['rank_change'],percent(r['p_gain']),point_change(r['p_gain_change']),percent(r['expected_return']),point_change(r['expected_return_change']),percent(r['p_loss_10']),point_change(r['p_loss_10_change']),r['status'],r['reason']] for r in rows])
+    return out
+
+
+def point_change(value):
+    return 'unavailable' if value is None else f'{100*value:+.1f}'
+
+
+def index_evidence(snapshots):
+    """Index once per run; avoid scanning all provider records for every ticker."""
+    from collections import defaultdict
+    index={kind:defaultdict(list) for kind in ('news','filings','facts','earnings','actions')}
+    for kind,by_symbol in index.items():
+        for row in snapshots.get(kind,[]):
+            if kind=='news': symbols=set(row.get('symbols',[]))
+            elif kind=='actions': symbols=set(row.get('resolved_tickers',[]))|{row.get(k) for k in ('symbol','old_symbol','new_symbol','initiating_symbol','target_symbol')}
+            else: symbols={row.get('symbol')}
+            for symbol in symbols-{None,''}: by_symbol[symbol].append(row)
+    return {**snapshots,'_by_symbol':index}
