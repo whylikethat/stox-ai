@@ -30,6 +30,7 @@ def forecast_rows(features, assets, models, cfg, expected_session):
                 reasons=eligible(lookup.get(row['symbol'],{}),row,cfg)
                 if row['session']!=expected_session:
                     reasons.append('stale price history')
+                data_reasons=list(reasons)
                 if not model.metadata['validated']:
                     reasons.append('model has not passed recommendation validation')
                 bucket=next((b for b in evaluation['buckets'] if b['bucket']==min(9,int(p[i,3]*10))),None)
@@ -74,6 +75,7 @@ def forecast_rows(features, assets, models, cfg, expected_session):
                         'calibration_support':bucket,'qualified':not reasons,'exclusions':reasons,
                         'probability_resolution':max(.01,(bucket['interval'][1]-bucket['interval'][0])/2) if bucket else 1.,
                         'quality_label':'Validated opportunity' if not reasons else 'Research only',
+                        'data_quality_reasons':data_reasons,'data_quality_status':'limited' if data_reasons else 'adequate',
                         'close':float(row['close']),'dollar_volume':float(row['dollar_volume']) if np.isfinite(row['dollar_volume']) else None,
                         'volatility':float(row['volatility']) if np.isfinite(row['volatility']) else None,'drawdown':float(row['drawdown']) if np.isfinite(row['drawdown']) else None,
                         'session':row['session'],'model_id':model.model_id,'feature_version':row.get('feature_version','causal-v2'),
@@ -83,12 +85,21 @@ def forecast_rows(features, assets, models, cfg, expected_session):
                 output.append(result)
     return output
 
+DATA_LIMITATIONS={'insufficient history','stale price history','missing recent regular sessions',
+    'insufficient median dollar liquidity','price below minimum','inactive security','reported micro-cap',
+    'security type is excluded or unverified','security master has not verified a queryable tradable ticker'}
+
+
+def data_limited(row):
+    return bool(row.get('data_quality_reasons')) or row.get('data_quality_status')=='limited' or bool(DATA_LIMITATIONS.intersection(row.get('exclusions',[])))
+
+
 def rank(rows):
-    """Deterministic probability-first ranking; no expected-return tolerance bands."""
+    """Qualified first, then data adequacy and consistency before probability."""
     agreement={'high':0,'moderate':1,'low':2}
     def key(r):
         support=r.get('calibration_support') or {}
-        return (not r.get('qualified',False), r.get('consistency_status')=='conflicting',
+        return (not r.get('qualified',False), data_limited(r), r.get('consistency_status')=='conflicting',
                 -r['p_gain'],r.get('p_loss_10',r.get('p_loss_20',1)),r.get('p_loss_20',1),
                 agreement.get(r.get('model_agreement'),3),-support.get('blocks',0),
                 -r['expected_return'],-r.get('median_return',0),

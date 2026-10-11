@@ -1,5 +1,13 @@
 ## 2.3.0
 
+## 2.3.1
+
+- Respect acquirer/target roles in merger return processing; parse stock-dividend multipliers separately from split ratios. Preserve genuinely unresolved events and typed identifiers.
+- Rank adequate-data research ahead of limited-data research without changing forecast estimates or hiding candidates.
+- Deduplicate report evidence through a versioned symbol-reference export; preserve historical forecasts and schema 5.
+- Add regression tests for action roles, dividend entitlements, data-quality ordering and lossless report compaction.
+
+
 - Replace unusable historical promotion windows with frozen paired forward trials, fixed evaluation policy, immutable entry/outcome records and explicit progress.
 - Add bounded quarterly earnings history, causal sector ETF affinity, accession-matched cash flow/margins/share trends, and licensed analyst/options export imports.
 - Add current data-quality/coverage diagnostics and per-horizon prospective Top 3/20 outcomes after costs.

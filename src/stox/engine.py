@@ -169,7 +169,7 @@ def _run(cfg,offline=False,force_train=False,timestamp=None,synthetic=False):
                           'friction_bps':cfg.friction_bps,'provider_health':[dict(r) for r in store.db.execute('SELECT * FROM health')],
                           'run_mode':'synthetic' if synthetic else 'offline' if offline else 'live',
                           'modeling_universe':json.loads(screen[0]) if screen else {'mode':'explicit or cached'},
-                          'ranking_rule':'Qualified first; conflicting research last; P(gain), downside risk, agreement, reliability, then returns; deterministic',
+                          'ranking_rule':'Qualified first; data-limited research after adequate-data research; consistency, P(gain), downside risk, agreement, reliability, then returns; deterministic',
                           'limits':'No brokerage, trades, capital allocation, continuous monitoring, or tax advice'}
                 # Issuance occurs after all computation, never backdated to data fetch start.
                 issued=started if synthetic else now_iso()

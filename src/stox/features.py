@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict
 from pathlib import Path
-from .actions import adjusted_history, relevant, total_return, UnresolvedAction
+from .actions import adjusted_history, relevant, total_return, UnresolvedAction, applies_to_returns
 from .storage import digest
 from .security import SecurityMaster
 
@@ -20,7 +20,7 @@ FAMILIES = {'price':BASE_FEATURES,'price_advanced':ADVANCED_PRICE,'market':MARKE
  'earnings':['earnings_days_until','earnings_surprise','earnings_days_since','earnings_positive_fraction'],
  'analyst':['analyst_eps_revision_30','analyst_sales_revision_30','analyst_revision_breadth'],
  'options':['options_iv30','options_iv60','options_iv90','options_skew','options_iv_rank']}
-FEATURE_VERSION='causal-v4'
+FEATURE_VERSION='causal-v5'
 
 NEGATIVE = ('bankruptcy','fraud','recall','lawsuit','downgrade','investigation','default','misses')
 
@@ -63,7 +63,8 @@ def build_features(store, symbols, calendar, cutoff, max_rows=250_000, progress=
     by_symbol=defaultdict(list)
     for a in actions:
         tickers=set(a.get('resolved_tickers',[])) | {a.get(k) for k in ('symbol','old_symbol','new_symbol','initiating_symbol','target_symbol')}
-        for ticker in tickers-{None,''}: by_symbol[ticker].append(a)
+        for ticker in tickers-{None,''}:
+            if applies_to_returns(a,ticker): by_symbol[ticker].append(a)
     frames,errors,breadth = [],{},[]
     total_rows=sum(r[1] for r in store.warehouse_summary() if r[0] in set(symbols))
     stride=max(1,int(np.ceil(total_rows/max_rows)))

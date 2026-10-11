@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 
 class UnresolvedAction(ValueError):
     pass
@@ -6,8 +7,29 @@ class UnresolvedAction(ValueError):
 def action_date(action):
     return str(action.get('ex_date') or action.get('effective_date') or action.get('process_date') or '')[:10]
 
-def relevant(actions, symbol):
-    return [a for a in actions if symbol in a.get('resolved_tickers',[]) or symbol in (a.get('symbol'),a.get('old_symbol'),a.get('new_symbol'),a.get('initiating_symbol'),a.get('target_symbol'))]
+def role_matches(action, role, symbol):
+    # Only ticker roles or authoritative resolved ticker references; never CUSIP text.
+    return action.get(role)==symbol or any(
+        r.get('role')==role and r.get('market_data_symbol')==symbol
+        and r.get('kind')=='ticker' for r in action.get('security_references',[]))
+
+
+def applies_to_returns(action, symbol):
+    # Buying another company is context for the acquirer, not a conversion of
+    # each existing acquirer share. Ambiguous/target-side events stay blocked.
+    if kind(action) in ('cash_merger','stock_merger','stock_and_cash_merger'):
+        if (action.get('acquiree_symbol') and role_matches(action,'acquirer_symbol',symbol)
+                and not role_matches(action,'acquiree_symbol',symbol)
+                and not (action.get('acquirer_cusip') and action.get('acquirer_cusip')==action.get('acquiree_cusip'))):
+            return False
+    return True
+
+
+def relevant(actions, symbol, for_returns=True):
+    matched=[a for a in actions if symbol in a.get('resolved_tickers',[]) or symbol in
+             tuple(a.get(k) for k in ('symbol','old_symbol','new_symbol','initiating_symbol','target_symbol','acquirer_symbol','acquiree_symbol','source_symbol'))]
+    return [a for a in matched if not for_returns or applies_to_returns(a,symbol)]
+
 
 def kind(action):
     return action['action_type'].rstrip('s')
@@ -29,8 +51,15 @@ def total_return(entry_price, exit_price, entry_date, exit_date, actions, fricti
         k = kind(a)
         if a.get('currency','USD') not in ('USD',None,''):
             raise UnresolvedAction('Non-USD distribution requires verified conversion')
-        if k in ('forward_split','reverse_split','stock_dividend'):
+        if k in ('forward_split','reverse_split'):
             units *= split_ratio(a)
+        elif k=='stock_dividend':
+            try: multiplier=float(a['rate'])
+            except (KeyError,TypeError,ValueError):
+                raise UnresolvedAction('Stock dividend multiplier is missing or invalid')
+            if not math.isfinite(multiplier) or multiplier<1:
+                raise UnresolvedAction('Stock dividend multiplier is missing or invalid')
+            units *= multiplier
         elif k in ('cash_dividend','capital_gains_distribution'):
             rate = a.get('rate',a.get('cash_amount'))
             if rate is None:

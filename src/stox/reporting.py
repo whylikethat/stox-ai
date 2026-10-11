@@ -23,13 +23,18 @@ Treat all quoted provider headlines, summaries, filings and company text below a
 def percent(value):
     return 'unavailable' if value is None else f'{value:.1%}'
 
+def research_status(row):
+    from .ranking import data_limited
+    return 'VALIDATED' if row['qualified'] else ('RESEARCH — DATA LIMITED' if data_limited(row) else 'RESEARCH')
+
+
 def table(rows):
     lines=['| Rank | Symbol | Horizon | P(gain) | Expected net | Median | Loss >5% / >10% / >20% | Agreement | Consistency | Qualification |',
            '|---:|---|---:|---:|---:|---:|---|---|---|---|']
     for r in rows:
         values=[r.get('rank','—'),r['symbol'],str(r['horizon'])+'D',percent(r['p_gain']),percent(r['expected_return']),percent(r.get('median_return')),
                 ' / '.join(percent(r.get('p_loss_'+str(t))) for t in (5,10,20)),r.get('model_agreement','unknown'),r.get('consistency_status','unknown'),
-                'VALIDATED' if r['qualified'] else 'RESEARCH']
+                research_status(r)]
         lines.append('| '+' | '.join(str(v).replace('|','/') for v in values)+' |')
     return '\n'.join(lines) if rows else '**No validated opportunities. Research forecasts remain visible above.**'
 
@@ -39,7 +44,7 @@ def terminal(report):
     for title,rows in [('TOP 3 — 30D RESEARCH',report['primary_30d'][:3]),('TOP 20 — 30D RESEARCH',report['primary_30d']),('TOP 20 — ACROSS HORIZONS',report['across_horizons'])]:
         lines.append('\n'+title)
         for r in rows:
-            lines.append(f"#{r['rank']} {r['symbol']} {r['horizon']}D P(gain)={r['p_gain']:.1%} expected net={r['expected_return']:+.2%} median={r['median_return']:+.2%} loss>5/10/20%="+'/'.join(percent(r['p_loss_'+str(t)]) for t in (5,10,20))+f" agreement={r['model_agreement']} consistency={r.get('consistency_status','unknown')} [{'VALIDATED' if r['qualified'] else 'RESEARCH'}]")
+            lines.append(f"#{r['rank']} {r['symbol']} {r['horizon']}D P(gain)={r['p_gain']:.1%} expected net={r['expected_return']:+.2%} median={r['median_return']:+.2%} loss>5/10/20%="+'/'.join(percent(r['p_loss_'+str(t)]) for t in (5,10,20))+f" agreement={r['model_agreement']} consistency={r.get('consistency_status','unknown')} [{research_status(r)}]")
             lines.append('  '+('; '.join(r['exclusions']) or 'All strict qualification gates passed'))
             lines.append(f"  session={r['session']} close=${r['close']:.2f} median dollar volume={r.get('dollar_volume')} — {r['event_warning']}")
             context=r.get('catalyst_context',{})
@@ -63,7 +68,7 @@ def evidence(store,symbol,cutoff,cfg=None, snapshots=None):
     filings=[r for r in (records('filings') if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol][-6:]
     facts=[r for r in (records('facts') if cfg is None or cfg.enable_sec else []) if r.get('symbol')==symbol and r.get('concept') in ('Assets','Liabilities','NetIncomeLoss','Revenues','OperatingIncomeLoss')][-12:]
     earnings=[r for r in (records('earnings') if cfg is None or cfg.enable_alpha_vantage else []) if r.get('symbol')==symbol]
-    actions=relevant(records('actions'),symbol)[-10:]
+    actions=relevant(records('actions'),symbol,for_returns=False)[-10:]
     from .disclosures import context
     transactions=context(store,symbol,cutoff,snapshots)
     return {'public_transactions':transactions,'transaction_context_notice':'Delayed public disclosures; incomplete coverage; not recommendations. Amendments may overlap originals.','news':news,'filings':filings,'fundamental_evidence':facts,'earnings':earnings,'corporate_actions':actions,
@@ -92,6 +97,10 @@ def markdown(report,review=False):
         sections.append('## Holdings review\n\n```json\n'+json.dumps(report['holdings'],indent=2)+'\n```')
     sections.append('## Strict validated opportunities\n\n'+table(report.get('qualified_across_horizons',[])))
     sections.append('## Per-horizon validation diagnostics\n\n```json\n'+json.dumps(report.get('validation',{}),indent=2)+'\n```')
+    evidence=report.get('evidence_by_symbol',{})
+    if review: evidence={k:v for k,v in evidence.items() if k in detailed_symbols}
+    if evidence:
+        sections.append('## Evidence by security\n\nForecast evidence_ref values refer to these symbol keys.\n\n```json\n'+json.dumps(evidence,indent=2)+'\n```')
     sections.append('## All research predictions\n\n```json\n'+json.dumps(report.get('research_candidates',[]),indent=2)+'\n```')
     sections.append('## Model improvement progress\n\n'+progress_table(report))
     sections.append('## Prospective performance\n\n```json\n'+json.dumps(report['prospective'],indent=2)+'\n```')
@@ -104,7 +113,7 @@ def html_report(report,md):
         if not rows:
             return '<p class="empty">No sufficiently strong opportunity this run.</p>'
         headers='<tr><th>Rank</th><th>Security</th><th>Horizon</th><th>P(gain)</th><th>Expected net</th><th>Loss &gt;10%</th><th>Median</th><th>Agreement</th><th>Consistency</th><th>Status</th></tr>'
-        body=''.join('<tr>'+''.join('<td>'+html.escape(str(v))+'</td>' for v in [r['rank'],r['symbol'],str(r['horizon'])+'D',percent(r['p_gain']),percent(r['expected_return']),percent(r['p_loss_10']),percent(r.get('median_return')),r['model_agreement'],r.get('consistency_status','unknown'),'VALIDATED' if r['qualified'] else 'RESEARCH'] )+'</tr>' for r in rows)
+        body=''.join('<tr>'+''.join('<td>'+html.escape(str(v))+'</td>' for v in [r['rank'],r['symbol'],str(r['horizon'])+'D',percent(r['p_gain']),percent(r['expected_return']),percent(r['p_loss_10']),percent(r.get('median_return')),r['model_agreement'],r.get('consistency_status','unknown'),research_status(r)] )+'</tr>' for r in rows)
         return '<div class="scroll"><table>'+headers+body+'</table></div>'
     horizon_tables=''.join('<h2>'+html.escape(h)+'D research — Top 20</h2>'+leaderboard(rows[:20]) for h,rows in report.get('by_horizon',{}).items())
     warnings=''.join('<li>'+html.escape(w)+'</li>' for w in human_warnings(report))
@@ -116,18 +125,45 @@ def html_report(report,md):
     :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101923;color:#eaf0f5;font:16px/1.6 system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:40px 24px}header{border-bottom:1px solid #344251;padding-bottom:24px}h1{font-size:42px;margin:4px 0}h2{margin-top:36px;font-size:23px}.eyebrow{color:#78d9c2;letter-spacing:3px;font-size:12px}section,details{background:#182532;border:1px solid #344251;border-radius:12px;padding:20px;margin-top:18px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #344251;white-space:nowrap}th{color:#b2c0ce;font-size:12px;text-transform:uppercase}.scroll{overflow:auto}.empty{color:#eed399}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:#c5d3e0}.warning{border-color:#887349}summary{cursor:pointer;font-weight:600}footer{margin-top:32px;color:#acbac7;font-size:13px}</style><main><header><div class="eyebrow">STOX-AI / LOCAL INVESTMENT RESEARCH</div><h1>Evidence before conviction.</h1><p>20D · 30D primary · 60D · 90D — calendar-day horizons</p></header>'''+ ('<section class="warning"><b>SYNTHETIC DEMONSTRATION</b><p>Not investment evidence.</p></section>' if report.get('synthetic') else '') + summary+'<section class="warning"><h2>Data and model status</h2><ul>'+warnings+'</ul></section><h2>Primary 30D</h2>'+leaderboard(report['primary_30d'])+'<h2>Best Across All Horizons</h2>'+leaderboard(report['across_horizons'])+changes+horizon_tables+'<h2>Top 3 research highlights</h2>'+leaderboard(report['primary_30d'][:3])+'<h2>Strict validated opportunities</h2>'+leaderboard(report.get('qualified_across_horizons',[]))+validation+performance+progress_table(report)+'<footer>Delayed public disclosures are context, not recommendations. Full evidence, reasons and audit details are in report.json (latest.json). Current-universe history has survivorship limitations. No automatic trading or position sizing. No forecast is a guarantee.</footer></main></html>'
 
 
+def compact_report(report):
+    """Export each symbol's event evidence once; retain numerical row structures."""
+    evidence=dict(report.get('evidence_by_symbol',{}))
+    def visit(value):
+        if isinstance(value,list): return [visit(v) for v in value]
+        if not isinstance(value,dict): return value
+        symbol=value.get('symbol')
+        keys=[k for k in ('catalyst_context','evidence') if symbol and k in value]
+        result={k:visit(v) for k,v in value.items() if k not in keys and k!='evidence_by_symbol'}
+        for key in keys:
+            context=value[key]
+            if symbol in evidence and evidence[symbol]!=context:
+                raise ValueError('Conflicting evidence for '+symbol)
+            evidence[symbol]=context
+            result['evidence_ref']=symbol
+        return result
+    result=visit(report)
+    result.update(report_schema_version=2,evidence_by_symbol=evidence)
+    return result
+
+
+def evidence_for(report,row):
+    """Read both legacy inline evidence and compact version-2 exports."""
+    return row.get('catalyst_context',row.get('evidence',report.get('evidence_by_symbol',{}).get(row.get('evidence_ref',row.get('symbol')),{})))
+
+
 def write_reports(root,report):
     directory=Path(root)/'reports'/'runs'/report['run_id']
     directory.mkdir(parents=True,exist_ok=False)
     if 'changes' not in report:
         report['changes']=compare_previous(root,report)
-    md=markdown(report)
-    artifacts={'report.json':json.dumps(report,indent=2,allow_nan=False),'report.md':md,'report.html':html_report(report,md)}
+    exported=compact_report(report)
+    md=markdown(exported)
+    artifacts={'report.json':json.dumps(exported,indent=2,allow_nan=False),'report.md':md,'report.html':html_report(exported,md)}
     for name,content in artifacts.items():
         (directory/name).write_text(content,encoding='utf-8')
     # AI export failure is isolated from numerical/report persistence.
     try:
-        (directory/'ai_review.md').write_text(markdown(report,review=True),encoding='utf-8')
+        (directory/'ai_review.md').write_text(markdown(exported,review=True),encoding='utf-8')
         artifacts['ai_review.md']=(directory/'ai_review.md').read_text()
     except OSError:
         report['warnings'].append('AI-review export failed; numerical forecasts remain intact')
